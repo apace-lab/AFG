@@ -1,11 +1,3 @@
-//! afg: MUMP overlap detector post-pass over rupta's points-to dump.
-//!
-//! Consumes the text file produced by `cargo pta --dump-pts` together with a
-//! MUMP user-config JSON.  For each configured user, computes the set of
-//! abstract objects reachable from that user's seed locals via rupta's pts
-//! relation, then reports abstract objects reached by two or more distinct
-//! users; the Scoped Taint Pointer Analysis (STPA) cross-user overlap.
-
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -14,9 +6,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
-#[command(name = "afg", about = "MUMP overlap detector over rupta's pts dump")]
+#[command(name = "afg", about = "MUMP overlap detector")]
 struct Args {
-    /// rupta's points-to dump (from `cargo pta --dump-pts <path>`)
     #[arg(long)]
     pts: PathBuf,
     /// MUMP user config JSON
