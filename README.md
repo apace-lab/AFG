@@ -33,7 +33,7 @@ is produced at `target/release/afg`.
 ## Usage
 
 ```sh
-afg --pts <rupta_pts_dump> --config <mump_config.json> [--verbose]
+afg --pts <pts_dump> --config <mump_config.json> [--verbose]
 ```
 
 Arguments:
@@ -76,9 +76,9 @@ of the leak.
 
 ### Regenerating the dump from source
 
-Install rupta first. The bundled `demo/` directory is the reference Rust
-program the sample dump was derived from. It pins rupta's nightly via its
-own `rust-toolchain.toml`.
+Install [RUPTA](https://github.com/rustanlys/rupta) first. The bundled
+`demo/` directory is the reference Rust program the sample dump was derived
+from. It pins RUPTA's nightly via its own `rust-toolchain.toml`.
 
 ```sh
 cd demo
@@ -124,7 +124,7 @@ Fields:
   in the points-to dump (e.g., `demo::main`,
   `async_openai::chat::Chat::create`). Matching is exact.
 - `users[].sources[].local`: MIR local index inside that function. Integer.
-  Maps to `FuncId(N)::local_M` in rupta's dump.
+  Maps to `FuncId(N)::local_M` in RUPTA's dump.
 - `users[].sources[].note`: Optional human-readable comment. Ignored by the
   tool.
 
@@ -155,7 +155,7 @@ FuncId(N)::<path>  [reached by: UserA, UserB, ...]  // <demangled origin>
 
 where:
 
-- `FuncId(N)` identifies a monomorphized function in rupta's index.
+- `FuncId(N)` identifies a monomorphized function in RUPTA's index.
 - `heap_bb0[K]` is a heap allocation in that function at block 0, statement
   K.
 - `.cast#K`, `.N`, and `.index.K` are projections onto casts, struct fields,
