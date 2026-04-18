@@ -1,0 +1,271 @@
+{
+    "ChatGPT": "none",
+    "Pake": "none",
+    "chat-ai-desktop": "none",
+    "Tabby": [
+        {
+            "fn_name": "register",
+            "return_type": "void",
+            "parameter_type": [
+                "ITextEditor"
+            ]
+        },
+        {
+            "fn_name": "editorCreate",
+            "return_type": "void",
+            "parameter_type": [
+                "AppHaEditorFactoryEvent"
+            ]
+        },
+        {
+            "fn_name": "SelectionListener",
+            "return_type": "void",
+            "parameter_type": [
+                "Editor",
+                "SelectionEvent"
+            ]
+        },
+        {
+            "fn_name": "caretPositionChanged",
+            "return_type": "void",
+            "parameter_type": [
+                "Editor",
+                "CaretEvent"
+            ]
+        },
+        {
+            "fn_name": "documentOpened",
+            "return_type": "void",
+            "parameter_type": [
+                "Document",
+                "Editor"
+            ]
+        },
+        {
+            "fn_name": "documentClosed",
+            "return_type": "void",
+            "parameter_type": [
+                "Document",
+                "Editor"
+            ]
+        },
+        {
+            "fn_name": "documentChanged",
+            "return_type": "void",
+            "parameter_type": [
+                "Document",
+                "Editor",
+                "DocumentEvent"
+            ]
+        },
+        {
+            "fn_name": "show",
+            "return_type": "void",
+            "parameter_type": [
+                "Editor",
+                "Int",
+                "InlineCompletionItem",
+                "(context: RenderingContext) -> Unit = {}"
+            ]
+        },
+        {
+            "fn_name": "launchJobForInlineCompletion",
+            "return_type": "Job",
+            "parameter_type": [
+                "InlineCompletionContext.Request",
+                "(inlineCompletionList: com.tabbyml.intellijtabby.lsp.protocol.InlineCompletionList?) -> Unit = {}"
+            ]
+        }
+    ],
+    "Chroma": [
+        {
+            "fn_name": "create_collection",
+            "return_type": "AsyncCollection",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfiguration] = None",
+                "Optional[CollectionMetadata] = None",
+                "Optional[EmbeddingFunction[Embeddable]] = ef.DefaultEmbeddingFunction()",
+                "Optional[DataLoader[Loadable]] = None",
+                "boolean"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "CollectionModel",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfigurationInternal] = None",
+                "Optional[CollectionMetadata] = None",
+                "boolean",
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "_add",
+            "return_type": "boolean",
+            "parameter_type": [
+                "self",
+                "IDs",
+                "UUID",
+                "Embeddings",
+                "Optional[Metadatas] = None",
+                "Optional[Documents] = None",
+                "Optional[URIs] = None"
+            ]
+        },
+        {
+            "fn_name": "_add",
+            "return_type": "boolean",
+            "parameter_type": [
+                "self",
+                "IDs",
+                "UUID",
+                "Embeddings",
+                "Optional[Metadatas] = None",
+                "Optional[Documents] = None",
+                "Optional[URIs] = None",
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "AsyncCollection",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfiguration] = None",
+                "Optional[CollectionMetadata] = None",
+                "Optional[EmbeddingFunction[Embeddable]] = ef.DefaultEmbeddingFunction()",
+                "Optional[DataLoader[Loadable]] = None",
+                "boolean"
+            ]
+        },
+        {
+            "fn_name": "_add",
+            "return_type": "bool",
+            "parameter_type": [
+                "self",
+                "IDs",
+                "UUID",
+                "Embeddings",
+                "Optional[Metadatas] = None",
+                "Optional[Documents] = None",
+                "Optional[URIs] = None"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "CollectionModel",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfigurationInternal] = None",
+                "Optional[CollectionMetadata] = None",
+                "boolean",
+                "string",
+                "string"
+            ]
+        },
+{
+            "fn_name": "create_collection",
+            "return_type": "Collection",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfiguration] = None",
+                "Optional[CollectionMetadata] = None",
+                "Optional[EmbeddingFunction[Embeddable]] = ef.DefaultEmbeddingFunction()",
+                "Optional[DataLoader[Loadable]] = None",
+                "boolean"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "CollectionModel",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfigurationInternal] = None",
+                "Optional[CollectionMetadata] = None",
+                "boolean",
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "CollectionModel",
+            "parameter_type": [
+                "self",
+                "string",
+                "Optional[CollectionConfigurationInternal] = None",
+                "Optional[CollectionMetadata] = None",
+                "boolean",
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "_add",
+            "return_type": "boolean",
+            "parameter_type": [
+                "self",
+                "IDs",
+                "UUID",
+                "Embeddings",
+                "Optional[Metadatas] = None",
+                "Optional[Documents] = None",
+                "Optional[URIs] = None",
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "add",
+            "return_type": "void",
+            "parameter_type": [
+                "self",
+                "OneOrMany[ID]",
+                "Optional[Union[OneOrMany[Embedding], OneOrMany[PyEmbedding],]] = None",
+                "Optional[OneOrMany[Metadata]] = None",
+                "Optional[OneOrMany[Document]] = None",
+                "Optional[OneOrMany[Image]] = None",
+                "Optional[OneOrMany[URI]] = None"
+            ]
+        },
+        {
+            "fn_name": "add",
+            "return_type": "void",
+            "parameter_type": [
+                "self",
+                "OneOrMany[ID]",
+                "Optional[Union[OneOrMany[Embedding], OneOrMany[PyEmbedding],]] = None",
+                "Optional[OneOrMany[Metadata]] = None",
+                "Optional[OneOrMany[Document]] = None",
+                "Optional[OneOrMany[Image]] = None",
+                "Optional[OneOrMany[URI]] = None"
+            ]
+        },
+        {
+            "fn_name": "create_collection",
+            "return_type": "Tuple[Collection, bool]",
+            "parameter_type": [
+                "self",
+                "UUID",
+                "string",
+                "CollectionConfigurationInternal",
+                "Sequence[Segment]",
+                "Optional[Metadata] = None",
+                "Optional[int] = None",
+                "boolean",
+                "string",
+                "string"
+            ]
+        }
+    ]
+}

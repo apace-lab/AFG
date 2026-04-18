@@ -1,0 +1,20 @@
+{
+  "users": [
+    {
+      "id": "UserA",
+      "sources": [
+        { "func": "demo::main", "local": 5,  "note": "Arc clone for UserA (shared_map.clone())" },
+        { "func": "demo::main", "local": 7,  "note": "UserA's question: \"What is my first event today?\"" },
+        { "func": "demo::main", "local": 8,  "note": "\"UserA\" literal" }
+      ]
+    },
+    {
+      "id": "UserB",
+      "sources": [
+        { "func": "demo::main", "local": 10, "note": "Arc clone for UserB (shared_map.clone())" },
+        { "func": "demo::main", "local": 12, "note": "UserB's question: \"What is my first event today?\"" },
+        { "func": "demo::main", "local": 13, "note": "\"UserB\" literal" }
+      ]
+    }
+  ]
+}

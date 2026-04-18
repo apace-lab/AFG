@@ -1,0 +1,130 @@
+{
+    "ChatGPT": [
+        {
+            "fn_name": "handleEdit",
+            "return_type": "void",
+            "parameter_type": [
+                "any"
+            ]
+        },
+        {
+            "fn_name": "SyncForm",
+            "return_type": "void",
+            "parameter_type": [
+                "React.Ref<FormProps>",
+                "Record<string | symbol, any>"
+            ]
+        },
+        {
+            "fn_name": "UserCustomForm",
+            "return_type": "void",
+            "parameter_type": [
+                "React.Ref<FormProps>",
+                "Record<string | symbol, any>"
+            ]
+        },
+        {
+            "fn_name": "SyncPrompts",
+            "return_type": "void",
+            "parameter_type": [
+                "none"
+            ]
+        },
+        {
+            "fn_name": "focusOnInput",
+            "return_type": "void",
+            "parameter_type": [
+                "none"
+            ]
+        },
+        {
+            "fn_name": "cmdKeydown",
+            "return_type": "void",
+            "parameter_type": [
+                "KeyboardEvent"
+            ]
+        }
+    ],
+    "Pake": [
+        {
+            "fn_name": "promptText",
+            "return_type": "string",
+            "parameter_type": [
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "handleOptions",
+            "return_type": "Object",
+            "parameter_type": [
+                "string",
+                "string"
+            ]
+        },
+        {
+            "fn_name": "prompts",
+            "return_type": "Object",
+            "parameter_type": [
+                "string",
+                "string",
+                "string"
+            ]
+        }
+    ],
+    "chat-ai-desktop": "none",
+    "Tabby": [
+        {
+            "fn_name": "generateCommitMessageRequest",
+            "return_type": "GenerateCommitMessageResult",
+            "parameter_type": [
+                "GenerateCommitMessageParams"
+            ]
+        },
+        {
+            "fn_name": "readChatStream",
+            "return_type": "Readable",
+            "parameter_type": [
+                "ReadableSteam",
+                "AbortSignal"
+            ]
+        },
+        {
+            "fn_name": "fetchChatStream",
+            "return_type": "Promise<Readable | null>",
+            "parameter_type": [
+                "TabbyApiComponents['schemas']['ChatCompletionRequest']",
+                "AbortSignal",
+                "boolean"
+            ]
+        },
+        {
+            "fn_name": "fetchChatStream",
+            "return_type": "TabbyApiComponents['schemas']['ChatCompletionResponse']",
+            "parameter_type": [
+                "TabbyApiComponents['schemas']['ChatCompletionRequest']",
+                "AbortSignal",
+                "boolean"
+            ]
+        }
+    ],
+    "Chroma": [
+        {
+            "fn_name": "createCollection",
+            "return_type": "Promise<Collection>",
+            "parameter_type": [
+                "CreateCollectionParams"
+            ]
+        },
+        {
+            "fn_name": "createCollection",
+            "return_type": "FetchArgs",
+            "parameter_type": [
+                "string",
+                "string",
+                "Api.CreateCollectionRequest",
+                "RequestInit"
+            ]
+        }
+    ]
+}

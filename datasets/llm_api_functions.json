@@ -1,0 +1,279 @@
+{
+    "_schema_notes": {
+        "purpose": "Reference dataset of LLM SDK request-entry functions. STPA treats matching calls as black-box nodes in the PAG: taint flows from inputs to outputs by a summary rule (Item 2) instead of descending into the callee.",
+        "usage": "For runtime use, copy entries into an example's taint_config.json under the \"taint\" array. fn_name must match the demangled Rust symbol; return_type and parameter_type are checked by PointerAnalysis::isTaintedFunction (PointerAnalysis.cpp:1892).",
+        "match_rule": "demangled(callee) == fn_name AND returnType matches AND parameter_type.size() <= callee.arg_size()",
+        "self_convention": "For methods, the receiver (&self / &mut self) is included as the first entry of parameter_type, matching the convention used in rust_input_functions.json for Tabby's chat/chat_stream."
+    },
+
+    "async-openai": [
+        {
+            "fn_name": "async_openai::chat::Chat::create",
+            "return_type": "Result<CreateChatCompletionResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateChatCompletionRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::chat::Chat::create_stream",
+            "return_type": "Result<ChatCompletionResponseStream, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateChatCompletionRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::completion::Completions::create",
+            "return_type": "Result<CreateCompletionResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateCompletionRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::completion::Completions::create_stream",
+            "return_type": "Result<CompletionResponseStream, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateCompletionRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::embedding::Embeddings::create",
+            "return_type": "Result<CreateEmbeddingResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateEmbeddingRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::image::Images::create",
+            "return_type": "Result<ImagesResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateImageRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::audio::Audio::speech",
+            "return_type": "Result<CreateSpeechResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateSpeechRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        },
+        {
+            "fn_name": "async_openai::audio::Audio::transcribe",
+            "return_type": "Result<CreateTranscriptionResponseJson, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateTranscriptionRequest"
+            ],
+            "verified_via": "context7:/64bit/async-openai"
+        }
+    ],
+
+    "ollama-rs": [
+        {
+            "fn_name": "ollama_rs::Ollama::generate",
+            "return_type": "Result<GenerationResponse, OllamaError>",
+            "parameter_type": [
+                "&self",
+                "GenerationRequest"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        },
+        {
+            "fn_name": "ollama_rs::Ollama::generate_stream",
+            "return_type": "Result<GenerationResponseStream, OllamaError>",
+            "parameter_type": [
+                "&self",
+                "GenerationRequest"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        },
+        {
+            "fn_name": "ollama_rs::Ollama::send_chat_messages",
+            "return_type": "Result<ChatMessageResponse, OllamaError>",
+            "parameter_type": [
+                "&self",
+                "ChatMessageRequest"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        },
+        {
+            "fn_name": "ollama_rs::Ollama::send_chat_messages_with_history",
+            "return_type": "Result<ChatMessageResponse, OllamaError>",
+            "parameter_type": [
+                "&self",
+                "&mut ChatHistory",
+                "ChatMessageRequest"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        },
+        {
+            "fn_name": "ollama_rs::Ollama::generate_embeddings",
+            "return_type": "Result<GenerateEmbeddingsResponse, OllamaError>",
+            "parameter_type": [
+                "&self",
+                "GenerateEmbeddingsRequest"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        },
+        {
+            "fn_name": "ollama_rs::coordinator::Coordinator::chat",
+            "return_type": "Result<ChatMessageResponse, OllamaError>",
+            "parameter_type": [
+                "&mut self",
+                "Vec<ChatMessage>"
+            ],
+            "verified_via": "context7:/pepperoni21/ollama-rs"
+        }
+    ],
+
+    "gemini-rust": [
+        {
+            "fn_name": "gemini_rust::Gemini::generate_content",
+            "return_type": "GenerateContentBuilder",
+            "parameter_type": [
+                "&self"
+            ],
+            "verified_via": "context7:/flachesis/gemini-rust",
+            "taint_role": "builder-entry; taint actually flows at GenerateContentBuilder::execute/execute_stream — treat either as the black-box point"
+        },
+        {
+            "fn_name": "gemini_rust::GenerateContentBuilder::execute",
+            "return_type": "Result<GenerateContentResponse, GeminiError>",
+            "parameter_type": [
+                "self"
+            ],
+            "verified_via": "context7:/flachesis/gemini-rust"
+        },
+        {
+            "fn_name": "gemini_rust::GenerateContentBuilder::execute_stream",
+            "return_type": "Result<GenerateContentStream, GeminiError>",
+            "parameter_type": [
+                "self"
+            ],
+            "verified_via": "context7:/flachesis/gemini-rust"
+        },
+        {
+            "fn_name": "gemini_rust::Conversation::send_message",
+            "return_type": "Result<GenerateContentResponse, GeminiError>",
+            "parameter_type": [
+                "&mut self",
+                "&str"
+            ],
+            "verified_via": "context7:/flachesis/gemini-rust"
+        }
+    ],
+
+    "anthropic-sdk": [
+        {
+            "fn_name": "anthropic_sdk::Client::messages",
+            "return_type": "Result<MessagesResponse, AnthropicError>",
+            "parameter_type": [
+                "&self",
+                "MessagesRequest"
+            ],
+            "verified_via": "unverified — fill in from actual crate once an LPA example is added"
+        },
+        {
+            "fn_name": "anthropic_sdk::MessagesBuilder::send",
+            "return_type": "Result<MessagesResponse, AnthropicError>",
+            "parameter_type": [
+                "self"
+            ],
+            "verified_via": "unverified — multiple Anthropic Rust crates exist (anthropic, anthropic-sdk, misanthropic); concrete signatures depend on which is used"
+        }
+    ],
+
+    "misanthropic": [
+        {
+            "fn_name": "misanthropic::Client::message",
+            "return_type": "Result<Response, Error>",
+            "parameter_type": [
+                "&self",
+                "Request"
+            ],
+            "verified_via": "unverified"
+        },
+        {
+            "fn_name": "misanthropic::Client::stream",
+            "return_type": "Result<ResponseStream, Error>",
+            "parameter_type": [
+                "&self",
+                "Request"
+            ],
+            "verified_via": "unverified"
+        }
+    ],
+
+    "llm-chain": [
+        {
+            "fn_name": "llm_chain::executor::Executor::execute",
+            "return_type": "Result<Output, ExecutorError>",
+            "parameter_type": [
+                "&self",
+                "Options",
+                "&Prompt"
+            ],
+            "verified_via": "unverified"
+        },
+        {
+            "fn_name": "llm_chain::chains::sequential::Chain::run",
+            "return_type": "Result<Output, ChainError>",
+            "parameter_type": [
+                "&self",
+                "Parameters",
+                "&Executor"
+            ],
+            "verified_via": "unverified"
+        }
+    ],
+
+    "genai": [
+        {
+            "fn_name": "genai::Client::exec_chat",
+            "return_type": "Result<ChatResponse, Error>",
+            "parameter_type": [
+                "&self",
+                "&str",
+                "ChatRequest",
+                "Option<&ChatOptions>"
+            ],
+            "verified_via": "unverified"
+        },
+        {
+            "fn_name": "genai::Client::exec_chat_stream",
+            "return_type": "Result<ChatStreamResponse, Error>",
+            "parameter_type": [
+                "&self",
+                "&str",
+                "ChatRequest",
+                "Option<&ChatOptions>"
+            ],
+            "verified_via": "unverified"
+        }
+    ],
+
+    "raw-http-reqwest": [
+        {
+            "fn_name": "reqwest::RequestBuilder::send",
+            "return_type": "Result<Response, reqwest::Error>",
+            "parameter_type": [
+                "self"
+            ],
+            "verified_via": "ambient",
+            "taint_role": "catch-all for LPAs that call provider HTTP APIs directly without an SDK; narrower match should be applied via URL/host predicate once we add that capability to STPA"
+        }
+    ]
+}

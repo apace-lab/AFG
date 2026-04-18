@@ -1,0 +1,19 @@
+[package]
+name = "afg"
+version = "0.1.0"
+edition = "2021"
+description = "MUMP overlap detector: a post-pass over rupta's points-to dump that flags cross-user data flow in Rust MIR."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = ""
+keywords = ["pointer-analysis", "taint-analysis", "mir", "rust", "security"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "afg"
+path = "src/main.rs"

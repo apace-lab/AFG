@@ -1,0 +1,105 @@
+{
+    "ChatGPT": [
+        {
+            "fn_name": "sync_prompts",
+            "return_type": "Option<Vec<PromptRecord>>",
+            "parameter_type": [
+                "AppHandle",
+                "u64"
+            ]
+        },
+        {
+            "fn_name": "new",
+            "return_type": "Self",
+            "parameter_type": [
+                "wrapper configuration"
+            ]
+        }
+    ],
+    "Pake": [
+        {
+            "fn_name": "download_file",
+            "return_type": "Result<(), String>",
+            "parameter_type": [
+                "AppHandle",
+                "DownloadFileParams"
+            ]
+        },
+        {
+            "fn_name": "download_file_by_binary",
+            "return_type": "Result<(), String>",
+            "parameter_type": [
+                "AppHandle",
+                "BinaryDownloadParams"
+            ]
+        }
+    ],
+    "chat-ai-desktop": [
+        {
+            "fn_name": "main",
+            "return_type": "void",
+            "parameter_type": [
+                "wrapper configuration"
+            ]
+        }
+    ],
+    "Tabby": [
+        {
+            "fn_name": "create",
+            "return_type": "Arc<dyn CompletionStream>",
+            "parameter_type": [
+                "&HttpModelConfig"
+            ]
+        },
+        {
+            "fn_name": "generate",
+            "return_type": "BoxStream<String>",
+            "parameter_type": [
+                "&self",
+                "&str",
+                "CompletionOptions"
+            ]
+        },
+        {
+            "fn_name": "create",
+            "return_type": "Arc<dyn ChatCompletionStream>",
+            "parameter_type": [
+                "&HttpModelConfig"
+            ]
+        },
+        {
+            "fn_name": "split_llms_content",
+            "return_type": "Vec<CrawledDocument>",
+            "parameter_type": [
+                "&str",
+                "&str"
+            ]
+        },
+        {
+            "fn_name": "chat",
+            "return_type": "Result<CreateChatCompletionResponse, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateChatCompletionRequest"
+            ]
+        },
+        {
+            "fn_name": "chat_stream",
+            "return_type": "Result<ChatCompletionResponseStream, OpenAIError>",
+            "parameter_type": [
+                "&self",
+                "CreateChatCompletionRequest"
+            ]
+        },
+        {
+            "fn_name": "generate",
+            "return_type": "BoxStream<String>",
+            "parameter_type": [
+                "&self",
+                "&str",
+                "CompletionOptions"
+            ]
+        }
+    ],
+    "Chroma": "none"
+}
