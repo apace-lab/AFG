@@ -1,13 +1,9 @@
-# afg
+# AFG
 
 Access Flow Guard (AFG) is a framework for detecting cross-user data leaks in
 multi-user Rust programs, in particular LLM-powered applications that share
 caches, databases, or other global state across user sessions.
 
-This repository is the MIR-based implementation of AFG. It consumes rupta's
-Rust MIR pointer-analysis output and reports the set of abstract objects that
-are reachable from more than one user, which are the candidate leak sites in
-the paper's terminology.
 
 ## What it does
 
@@ -23,22 +19,7 @@ the pointer assignment graph to a fixed point and reports every abstract
 object reached by two or more distinct users. These are the cross-user
 overlap sites.
 
-The tool itself is a post-pass: it runs after rupta has already computed the
-points-to graph, so it does not touch rupta's source and does not pay the
-cost of re-analyzing the program.
 
-## How it fits with rupta
-
-Rupta (https://github.com/rustanlys/rupta) is an external project that
-performs Andersen-style or k-callsite-sensitive pointer analysis over Rust
-MIR. `afg` treats rupta as a black box, reads the points-to text dump rupta
-produces (`--dump-pts`), and applies the AFG-specific taint-tagging and
-overlap detection on top of it.
-
-The earlier AFG prototype operated on LLVM IR through a C++ LLVM pass.
-Switching to MIR removes the symbol-demangling step, preserves Rust-level
-type and path information, and lets us inherit rupta's handling of Rust
-constructs such as closures, trait dispatch, and monomorphization.
 
 ## Build
 
@@ -70,7 +51,7 @@ AFG demo program and a matching user config. The demo simulates two users
 querying an LLM-style cache backed by a shared `Arc<Mutex<HashMap<String,
 String>>>`, which is the running example in the AFG paper.
 
-Run directly on the included sample, with no rupta installation needed:
+Run directly on the included sample:
 
 ```sh
 cargo build --release
@@ -216,62 +197,6 @@ Complexity per iteration is `O(|Users| * |E| * |R_u|)` in the worst case.
 For the AFG demo (1055 edges, 2 users, 6-object reachable sets), the full
 fixed point runs in under 100 microseconds.
 
-## Measured performance on the demo
-
-End-to-end, from Rust source to overlap report, running on the AFG demo:
-
-| Stage                         | Value                 |
-|-------------------------------|-----------------------|
-| Rupta call graph (CS edges)   | 489                   |
-| Rupta reachable functions     | 354                   |
-| Rupta points-to relations     | 1328                  |
-| Rupta analysis time           | 149 ms                |
-| `afg` parse time              | 308 us                |
-| `afg` fixed-point time        | 95 us (4 iterations)  |
-| `afg` total post-pass time    | 810 us                |
-| Cross-user overlap nodes      | 3 (all true positive) |
-
-## Limitations
-
-- Function name matching in the config is exact. If the pts dump lists a
-  monomorphized entry like
-  `async_openai::chat::Chat<OpenAIConfig>::create`, the config must use that
-  exact string. A future revision should accept a prefix or regex form.
-- Taint propagation is context-insensitive at the post-pass layer because
-  rupta's text dump flattens contexts. For finer distinctions (for example,
-  separating the same function called from two call sites), origin tags
-  should be computed inside rupta on the context-sensitive pts-set, rather
-  than in this post-pass.
-- The tool treats the full points-to relation as one graph. Access-control
-  policies that statically block flow on specific edges are not yet modeled.
-  This is Stage 3 of the AFG framework, dynamic refinement.
-- The tool does not yet model LLM API calls as summarized black boxes. The
-  conservative rule (all outputs tainted by all inputs) is implied by
-  seeding the call's parameters and treating its return value as tainted,
-  but field-level summary models are not expressed here yet.
-
-## File layout
-
-```
-afg/
-    Cargo.toml              stable Rust, 3 crate deps
-    src/main.rs             parser, fixed-point, overlap report
-    examples/
-        demo_pts.sample.txt sample rupta dump from the demo program
-        mump_config.json    matching user config for the demo
-    demo/                   reference Rust program the sample was generated from
-        Cargo.toml
-        rust-toolchain.toml pins rupta's nightly
-        src/main.rs         two threads sharing Arc<Mutex<HashMap>>
-    datasets/               MUMP reference datasets (signature catalogues)
-        rust_input_functions.json
-        JsTs_input_functions.json
-        otherlang_input_functions.json
-        llm_api_functions.json
-    LICENSE
-    README.md
-    .gitignore
-```
 
 ### Notes on the `datasets/` directory
 
