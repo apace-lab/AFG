@@ -1,0 +1,617 @@
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::LazyLock;
+
+// ── Public types ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Signature {
+    pub library: String,
+    pub fn_name: String,
+    pub return_type: String,
+    pub parameter_type: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallSite {
+    pub func_id: String,
+    pub function: String,
+    pub basic_block: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiMatch {
+    pub library: String,
+    pub fn_name: String,
+    pub match_strategy: String,
+    pub callsite: CallSite,
+    pub raw_line: String,
+}
+
+// ── Loader ────────────────────────────────────────────────────────────────────
+
+/// Load all LLM API signatures from `datasets_path/llm_api_functions.json`.
+/// Re-parsed on every call so users can update the file without recompiling.
+pub fn load_signatures(datasets_path: &Path) -> Result<Vec<Signature>, Box<dyn std::error::Error>> {
+    let json_path = datasets_path.join("llm_api_functions.json");
+    let content = fs::read_to_string(&json_path)
+        .map_err(|e| format!("cannot read {}: {}", json_path.display(), e))?;
+    let data: HashMap<String, serde_json::Value> = serde_json::from_str(&content)?;
+
+    let mut sigs = Vec::new();
+    for (lib_name, entries) in &data {
+        if lib_name.starts_with('_') {
+            continue;
+        }
+        let Some(entries) = entries.as_array() else {
+            continue;
+        };
+        for entry in entries {
+            let fn_name = entry["fn_name"].as_str().unwrap_or("").to_string();
+            if fn_name.is_empty() {
+                continue;
+            }
+            let return_type = entry
+                .get("return_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let parameter_type = entry
+                .get("parameter_type")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            sigs.push(Signature {
+                library: lib_name.clone(),
+                fn_name,
+                return_type,
+                parameter_type,
+            });
+        }
+    }
+    Ok(sigs)
+}
+
+// ── Matching ──────────────────────────────────────────────────────────────────
+
+struct Matcher {
+    strategy: &'static str,
+    pattern: Regex,
+}
+
+/// Build per-signature regex matchers (same three strategies as the Python tool).
+fn make_matchers(sig: &Signature) -> Vec<Matcher> {
+    let parts: Vec<&str> = sig.fn_name.split("::").collect();
+    let method = parts.last().copied().unwrap_or("");
+    let struct_path = if parts.len() > 1 {
+        parts[..parts.len() - 1].join("::")
+    } else {
+        String::new()
+    };
+
+    let mut matchers = Vec::new();
+
+    // 1. Direct:  async_openai::chat::Chat::create<...>(
+    let direct_pat = format!(
+        r"{}(?:<[^(]*)?\s*\(",
+        regex::escape(&sig.fn_name)
+    );
+    if let Ok(re) = Regex::new(&direct_pat) {
+        matchers.push(Matcher { strategy: "direct", pattern: re });
+    }
+
+    // 2. Angle-bracket:  <async_openai::chat::Chat ...>::create<...>(
+    if !struct_path.is_empty() {
+        let ab_pat = format!(
+            r"<\s*{}[^>]*>\s*::\s*{}(?:<[^(]*)?\s*\(",
+            regex::escape(&struct_path),
+            regex::escape(method)
+        );
+        if let Ok(re) = Regex::new(&ab_pat) {
+            matchers.push(Matcher { strategy: "angle-bracket", pattern: re });
+        }
+    }
+
+    // 3. Short-name:  Chat::create(  (last two path segments — lower confidence)
+    if parts.len() >= 2 {
+        let last_two = parts[parts.len() - 2..].join("::");
+        let short_pat = format!(r"{}\s*\(", regex::escape(&last_two));
+        if let Ok(re) = Regex::new(&short_pat) {
+            matchers.push(Matcher { strategy: "short-name", pattern: re });
+        }
+    }
+
+    matchers
+}
+
+// ── MIR line patterns ─────────────────────────────────────────────────────────
+
+static RE_FUNC_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\[FuncId\((\d+)\)\s*-\s*"([^"]+)"\]"#).unwrap()
+});
+
+static RE_BB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+(bb\w+):\s*\{").unwrap()
+});
+
+// Captures callee: optional "dest = " prefix, then everything up to "("
+static RE_CALL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s+(?:_\d+\s*=\s*)?(?P<callee>[^=(][^(]*)\(").unwrap()
+});
+
+// ── Scanner ───────────────────────────────────────────────────────────────────
+
+/// Scan `mir_content` for calls matching any of `sigs`.
+/// Returns one `ApiMatch` per unique (callsite, signature) pair found.
+pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
+    let sig_matchers: Vec<(&Signature, Vec<Matcher>)> = sigs
+        .iter()
+        .map(|sig| (sig, make_matchers(sig)))
+        .collect();
+
+    let mut matches = Vec::new();
+    let mut current_func_id = String::from("unknown");
+    let mut current_func_name = String::from("unknown");
+    let mut current_bb = String::from("unknown");
+
+    for (lineno, line) in mir_content.lines().enumerate().map(|(i, l)| (i + 1, l)) {
+        if let Some(caps) = RE_FUNC_HEADER.captures(line) {
+            current_func_id = format!("FuncId({})", &caps[1]);
+            current_func_name = caps[2].to_string();
+            current_bb = String::from("unknown");
+            continue;
+        }
+        if let Some(caps) = RE_BB.captures(line) {
+            current_bb = caps[1].to_string();
+            continue;
+        }
+        let Some(caps) = RE_CALL.captures(line) else {
+            continue;
+        };
+
+        // Re-append "(" so that patterns ending with \( can match
+        let callee_raw = format!("{}(", caps["callee"].trim());
+
+        'sig: for (sig, matchers) in &sig_matchers {
+            for matcher in matchers {
+                if matcher.pattern.is_match(&callee_raw) {
+                    matches.push(ApiMatch {
+                        library: sig.library.clone(),
+                        fn_name: sig.fn_name.clone(),
+                        match_strategy: matcher.strategy.to_string(),
+                        callsite: CallSite {
+                            func_id: current_func_id.clone(),
+                            function: current_func_name.clone(),
+                            basic_block: current_bb.clone(),
+                            line: lineno,
+                        },
+                        raw_line: line.trim().to_string(),
+                    });
+                    break 'sig;
+                }
+            }
+        }
+    }
+
+    matches
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Fixtures: real rupta MIR output from various demo projects ───────────
+
+    // async-openai (4 call sites): original test-target MIR
+    const TEST_TARGET_MIR: &str =
+        include_str!("../../llm-api-finder/test-target/output/test_target_mir.txt");
+
+    // demo MIR: async-openai (stub) + reqwest (raw HTTP) — updated demo project
+    const DEMO_MIR: &str =
+        include_str!("../demo/output_demo/demo_mir.txt");
+
+    // genai-demo MIR: genai::Client::exec_chat
+    const GENAI_DEMO_MIR: &str =
+        include_str!("../genai-demo/output/genai_mir.txt");
+
+    fn datasets_path() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("datasets").leak()
+    }
+
+    // ── Helper: build a minimal Signature for inline MIR tests ───────────────
+
+    fn sig(library: &str, fn_name: &str) -> Signature {
+        Signature {
+            library: library.to_string(),
+            fn_name: fn_name.to_string(),
+            return_type: String::new(),
+            parameter_type: vec![],
+        }
+    }
+
+    // ── Loader test ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn loads_all_sdk_signatures() {
+        let sigs = load_signatures(datasets_path()).expect("load_signatures failed");
+        assert!(!sigs.is_empty(), "expected at least one signature");
+
+        // All documented libraries must appear
+        let libs: Vec<_> = sigs.iter().map(|s| s.library.as_str()).collect();
+        for expected in &[
+            "async-openai",
+            "ollama-rs",
+            "gemini-rust",
+            "anthropic-sdk",
+            "misanthropic",
+            "llm-chain",
+            "genai",
+            "raw-http-reqwest",
+        ] {
+            assert!(
+                libs.contains(expected),
+                "library '{expected}' missing from loaded signatures"
+            );
+        }
+    }
+
+    // ── async-openai: fixture-based test ──────────────────────────────────────
+
+    #[test]
+    fn detects_async_openai_from_fixture() {
+        let sigs = load_signatures(datasets_path()).expect("load_signatures failed");
+        let matches = scan_mir(TEST_TARGET_MIR, &sigs);
+
+        let openai_matches: Vec<_> = matches
+            .iter()
+            .filter(|m| m.library == "async-openai")
+            .collect();
+
+        // The fixture exercises Chat::create, Chat::create_stream,
+        // Completions::create, and Embeddings::create
+        assert_eq!(
+            openai_matches.len(),
+            4,
+            "expected 4 async-openai matches, got: {:#?}",
+            openai_matches
+        );
+
+        let found_fns: Vec<_> = openai_matches.iter().map(|m| m.fn_name.as_str()).collect();
+        assert!(found_fns.contains(&"async_openai::chat::Chat::create"));
+        assert!(found_fns.contains(&"async_openai::chat::Chat::create_stream"));
+        assert!(found_fns.contains(&"async_openai::completion::Completions::create"));
+        assert!(found_fns.contains(&"async_openai::embedding::Embeddings::create"));
+    }
+
+    // ── ollama-rs: inline MIR snippet ─────────────────────────────────────────
+
+    #[test]
+    fn detects_ollama_rs() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_ollama"]
+fn run_ollama() -> () {
+    let _0: ();
+    let _1: ollama_rs::Ollama;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = ollama_rs::Ollama::generate(move _1, const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+[FuncId(2) - "my_app::run_ollama_chat"]
+fn run_ollama_chat() -> () {
+    let _0: ();
+    let _1: ollama_rs::Ollama;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = ollama_rs::Ollama::send_chat_messages(move _1, const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![
+            sig("ollama-rs", "ollama_rs::Ollama::generate"),
+            sig("ollama-rs", "ollama_rs::Ollama::send_chat_messages"),
+        ];
+        let matches = scan_mir(MIR, &sigs);
+        let fns: Vec<_> = matches.iter().map(|m| m.fn_name.as_str()).collect();
+        assert!(fns.contains(&"ollama_rs::Ollama::generate"), "missed generate");
+        assert!(
+            fns.contains(&"ollama_rs::Ollama::send_chat_messages"),
+            "missed send_chat_messages"
+        );
+    }
+
+    // ── gemini-rust: inline MIR snippet ──────────────────────────────────────
+
+    #[test]
+    fn detects_gemini_rust() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_gemini"]
+fn run_gemini() -> () {
+    let _0: ();
+    let _1: gemini_rust::Gemini;
+    let _2: gemini_rust::GenerateContentBuilder;
+    let _3: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = gemini_rust::Gemini::generate_content(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _3 = gemini_rust::GenerateContentBuilder::execute(move _2) -> [return: bb2, unwind continue];
+    }
+    bb2: { return; }
+}
+[FuncId(2) - "my_app::run_gemini_convo"]
+fn run_gemini_convo() -> () {
+    let _0: ();
+    let _1: gemini_rust::Conversation;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = gemini_rust::Conversation::send_message(move _1, const "hello") -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![
+            sig("gemini-rust", "gemini_rust::Gemini::generate_content"),
+            sig("gemini-rust", "gemini_rust::GenerateContentBuilder::execute"),
+            sig("gemini-rust", "gemini_rust::Conversation::send_message"),
+        ];
+        let matches = scan_mir(MIR, &sigs);
+        let fns: Vec<_> = matches.iter().map(|m| m.fn_name.as_str()).collect();
+        assert!(fns.contains(&"gemini_rust::Gemini::generate_content"), "missed generate_content");
+        assert!(
+            fns.contains(&"gemini_rust::GenerateContentBuilder::execute"),
+            "missed execute"
+        );
+        assert!(fns.contains(&"gemini_rust::Conversation::send_message"), "missed send_message");
+    }
+
+    // ── anthropic-sdk: inline MIR snippet ────────────────────────────────────
+
+    #[test]
+    fn detects_anthropic_sdk() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_anthropic"]
+fn run_anthropic() -> () {
+    let _0: ();
+    let _1: anthropic_sdk::Client;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = anthropic_sdk::Client::messages(move _1, const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("anthropic-sdk", "anthropic_sdk::Client::messages")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed anthropic_sdk::Client::messages");
+    }
+
+    // ── misanthropic: inline MIR snippet ─────────────────────────────────────
+
+    #[test]
+    fn detects_misanthropic() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_misanthropic"]
+fn run_misanthropic() -> () {
+    let _0: ();
+    let _1: misanthropic::Client;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = misanthropic::Client::message(move _1, const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("misanthropic", "misanthropic::Client::message")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed misanthropic::Client::message");
+    }
+
+    // ── llm-chain: inline MIR snippet ────────────────────────────────────────
+
+    #[test]
+    fn detects_llm_chain() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_chain"]
+fn run_chain() -> () {
+    let _0: ();
+    let _1: llm_chain::executor::Executor;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = llm_chain::executor::Executor::execute(move _1, const (), const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("llm-chain", "llm_chain::executor::Executor::execute")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed llm_chain::executor::Executor::execute");
+    }
+
+    // ── genai: inline MIR snippet ─────────────────────────────────────────────
+
+    #[test]
+    fn detects_genai() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_genai"]
+fn run_genai() -> () {
+    let _0: ();
+    let _1: genai::Client;
+    let _2: std::result::Result<(), ()>;
+
+    bb0: {
+        _2 = genai::Client::exec_chat(move _1, const "gpt-4", const (), const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("genai", "genai::Client::exec_chat")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed genai::Client::exec_chat");
+    }
+
+    // ── raw-http-reqwest: inline MIR snippet ─────────────────────────────────
+
+    #[test]
+    fn detects_reqwest() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::call_api_directly"]
+fn call_api_directly() -> () {
+    let _0: ();
+    let _1: reqwest::RequestBuilder;
+    let _2: std::result::Result<reqwest::Response, reqwest::Error>;
+
+    bb0: {
+        _2 = reqwest::RequestBuilder::send(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("raw-http-reqwest", "reqwest::RequestBuilder::send")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed reqwest::RequestBuilder::send");
+    }
+
+    // ── full load + scan round-trip on fixture ────────────────────────────────
+
+    #[test]
+    fn full_roundtrip_fixture() {
+        let sigs = load_signatures(datasets_path()).expect("load_signatures");
+        let matches = scan_mir(TEST_TARGET_MIR, &sigs);
+        // The fixture only contains async-openai stub calls; every match must
+        // be attributed to "async-openai".
+        assert!(!matches.is_empty());
+        for m in &matches {
+            assert_eq!(
+                m.library, "async-openai",
+                "unexpected library: {}",
+                m.library
+            );
+        }
+    }
+
+    // ── Match-strategy smoke tests ────────────────────────────────────────────
+
+    #[test]
+    fn short_name_strategy_fires_for_stub_crate_names() {
+        // Stubs expose different crate names (e.g. async_openai_stub) but
+        // share the same struct/method names — short-name should still match.
+        const MIR: &str = r#"
+[FuncId(1) - "test_target::call_chat"]
+fn call_chat() -> () {
+    let _0: ();
+    let _1: async_openai_stub::chat::Chat;
+
+    bb0: {
+        _2 = async_openai_stub::chat::Chat::create(_1, const ()) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("async-openai", "async_openai::chat::Chat::create")];
+        let matches = scan_mir(MIR, &sigs);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].match_strategy, "short-name");
+    }
+
+    // ── demo: async-openai + raw-http-reqwest (fixture) ──────────────────────
+
+    #[test]
+    fn detects_async_openai_and_reqwest_in_demo() {
+        let sigs = load_signatures(datasets_path()).expect("load_signatures");
+        let matches = scan_mir(DEMO_MIR, &sigs);
+
+        let libs: Vec<_> = matches.iter().map(|m| m.library.as_str()).collect();
+        assert!(
+            libs.contains(&"async-openai"),
+            "async-openai not found in demo MIR; matches: {:#?}",
+            matches
+        );
+        assert!(
+            libs.contains(&"raw-http-reqwest"),
+            "raw-http-reqwest not found in demo MIR; matches: {:#?}",
+            matches
+        );
+
+        // async-openai: call_chatgpt_api via stub short-name match
+        let openai: Vec<_> = matches.iter().filter(|m| m.library == "async-openai").collect();
+        assert!(!openai.is_empty());
+        // raw-http-reqwest: call_openai_direct via reqwest::blocking::RequestBuilder::send
+        let reqwest: Vec<_> = matches.iter().filter(|m| m.library == "raw-http-reqwest").collect();
+        assert_eq!(reqwest.len(), 1);
+        assert_eq!(reqwest[0].fn_name, "reqwest::RequestBuilder::send");
+        assert_eq!(reqwest[0].match_strategy, "short-name");
+    }
+
+    // ── genai-demo: genai::Client::exec_chat (fixture) ───────────────────────
+
+    #[test]
+    fn detects_genai_exec_chat_in_genai_demo() {
+        let sigs = load_signatures(datasets_path()).expect("load_signatures");
+        let matches = scan_mir(GENAI_DEMO_MIR, &sigs);
+
+        let genai_matches: Vec<_> = matches
+            .iter()
+            .filter(|m| m.library == "genai")
+            .collect();
+        assert_eq!(
+            genai_matches.len(),
+            1,
+            "expected 1 genai match, got: {:#?}",
+            genai_matches
+        );
+        assert_eq!(genai_matches[0].fn_name, "genai::Client::exec_chat");
+        // Direct strategy fires because MIR emits the full path
+        assert!(
+            matches!(genai_matches[0].match_strategy.as_str(), "direct" | "angle-bracket" | "short-name"),
+            "unexpected strategy: {}",
+            genai_matches[0].match_strategy
+        );
+        // No false positives from other libraries
+        let other: Vec<_> = matches.iter().filter(|m| m.library != "genai").collect();
+        assert!(other.is_empty(), "unexpected non-genai matches: {:#?}", other);
+    }
+
+    #[test]
+    fn no_false_positives_on_unrelated_calls() {
+        const MIR: &str = r#"
+[FuncId(1) - "demo::main"]
+fn main() -> () {
+    bb0: {
+        _1 = std::collections::HashMap::<String, String>::new() -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _2 = std::sync::Mutex::<HashMap<String, String>>::new(move _3) -> [return: bb2, unwind continue];
+    }
+    bb2: { return; }
+}
+"#;
+        let sigs = load_signatures(datasets_path()).expect("load_signatures");
+        let matches = scan_mir(MIR, &sigs);
+        assert!(
+            matches.is_empty(),
+            "false positives detected: {:#?}",
+            matches
+        );
+    }
+}
