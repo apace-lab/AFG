@@ -1,0 +1,31 @@
+{
+  "matches": [
+    {
+      "callsite": {
+        "basic_block": "bb28",
+        "func_id": "FuncId(11)",
+        "function": "demo::call_openai_direct",
+        "line": 1294
+      },
+      "fn_name": "reqwest::RequestBuilder::send",
+      "library": "raw-http-reqwest",
+      "match_strategy": "short-name",
+      "raw_line": "_41 = reqwest::blocking::RequestBuilder::send(const reqwest::blocking::RequestBuilder) -> [return: bb29, unwind: bb40];"
+    },
+    {
+      "callsite": {
+        "basic_block": "bb0",
+        "func_id": "FuncId(78)",
+        "function": "demo::call_chatgpt_api",
+        "line": 5874
+      },
+      "fn_name": "async_openai::chat::Chat::create",
+      "library": "async-openai",
+      "match_strategy": "short-name",
+      "raw_line": "_3 = async_openai_stub::chat::Chat::create(_1, const async_openai_stub::CreateChatCompletionRequest) -> [return: bb1, unwind continue];"
+    }
+  ],
+  "mir_file": "examples/demo_mir.txt",
+  "signatures_loaded": 28,
+  "total_matches": 2
+}

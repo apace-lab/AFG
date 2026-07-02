@@ -2,3 +2,11 @@
 name = "demo"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+async-openai-stub = { path = "../../llm-api-finder/async-openai-stub" }
+genai = { path = "../../llm-api-finder/genai-stub" }
+# reqwest stub: package name "reqwest" → MIR emits reqwest::blocking::RequestBuilder::send,
+# matched by raw-http-reqwest dataset entry via short-name strategy.
+reqwest = { path = "../../llm-api-finder/reqwest-stub", features = ["blocking", "json"] }
+serde_json = "1"

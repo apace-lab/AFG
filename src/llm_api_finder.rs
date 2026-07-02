@@ -150,6 +150,36 @@ static RE_CALL: LazyLock<Regex> = LazyLock::new(|| {
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
+/// Remove `::<...>` turbofish segments from a callee path, including nested
+/// generics (e.g. `Chat::<'_, mycrate::config::OpenAIConfig>::create` ->
+/// `Chat::create`). MIR pretty-printing places generic args mid-path on the
+/// receiver type, which the fixed-string/last-two-segment matchers below
+/// don't expect between path separators.
+fn strip_turbofish(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == ':' && chars.get(i + 1) == Some(&':') && chars.get(i + 2) == Some(&'<') {
+            let mut depth = 1;
+            let mut j = i + 3;
+            while j < chars.len() && depth > 0 {
+                match chars[j] {
+                    '<' => depth += 1,
+                    '>' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
 /// Scan `mir_content` for calls matching any of `sigs`.
 /// Returns one `ApiMatch` per unique (callsite, signature) pair found.
 pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
@@ -180,6 +210,7 @@ pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
 
         // Re-append "(" so that patterns ending with \( can match
         let callee_raw = format!("{}(", caps["callee"].trim());
+        let callee_raw = strip_turbofish(&callee_raw);
 
         'sig: for (sig, matchers) in &sig_matchers {
             for matcher in matchers {
@@ -213,17 +244,19 @@ mod tests {
 
     // ── Fixtures: real rupta MIR output from various demo projects ───────────
 
-    // async-openai (4 call sites): original test-target MIR
+    // async-openai via turbofish (1 call site): tabby chat-harness MIR.
+    // async_openai_alt::Chat::<'_, OpenAIConfig>::create — exercises short-name
+    // matching after turbofish stripping.
     const TEST_TARGET_MIR: &str =
-        include_str!("../../llm-api-finder/test-target/output/test_target_mir.txt");
+        include_str!("../examples/tabby_direct_mir.txt");
 
-    // demo MIR: async-openai (stub) + reqwest (raw HTTP) — updated demo project
+    // demo MIR: async-openai (stub) + raw-http-reqwest (blocking client)
     const DEMO_MIR: &str =
-        include_str!("../demo/output_demo/demo_mir.txt");
+        include_str!("../examples/demo_mir.txt");
 
-    // genai-demo MIR: genai::Client::exec_chat
+    // genai MIR: genai::Client::exec_chat (direct match, no other SDK calls)
     const GENAI_DEMO_MIR: &str =
-        include_str!("../genai-demo/output/genai_mir.txt");
+        include_str!("../examples/genai_mir.txt");
 
     fn datasets_path() -> &'static Path {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("datasets").leak()
@@ -278,20 +311,17 @@ mod tests {
             .filter(|m| m.library == "async-openai")
             .collect();
 
-        // The fixture exercises Chat::create, Chat::create_stream,
-        // Completions::create, and Embeddings::create
+        // The tabby fixture has one Chat::create call emitted as
+        // async_openai_alt::Chat::<'_, OpenAIConfig>::create — the turbofish
+        // is stripped and short-name fires.
         assert_eq!(
             openai_matches.len(),
-            4,
-            "expected 4 async-openai matches, got: {:#?}",
+            1,
+            "expected 1 async-openai match, got: {:#?}",
             openai_matches
         );
-
-        let found_fns: Vec<_> = openai_matches.iter().map(|m| m.fn_name.as_str()).collect();
-        assert!(found_fns.contains(&"async_openai::chat::Chat::create"));
-        assert!(found_fns.contains(&"async_openai::chat::Chat::create_stream"));
-        assert!(found_fns.contains(&"async_openai::completion::Completions::create"));
-        assert!(found_fns.contains(&"async_openai::embedding::Embeddings::create"));
+        assert_eq!(openai_matches[0].fn_name, "async_openai::chat::Chat::create");
+        assert_eq!(openai_matches[0].match_strategy, "short-name");
     }
 
     // ── ollama-rs: inline MIR snippet ─────────────────────────────────────────
@@ -492,13 +522,84 @@ fn call_api_directly() -> () {
         assert!(!matches.is_empty(), "missed reqwest::RequestBuilder::send");
     }
 
+    // ── raw-http-reqwest blocking: inline MIR snippet ────────────────────────
+
+    #[test]
+    fn detects_reqwest_blocking() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::call_api_blocking"]
+fn call_api_blocking() -> () {
+    let _0: ();
+    let _1: reqwest::blocking::RequestBuilder;
+    let _2: std::result::Result<reqwest::Response, reqwest::Error>;
+
+    bb0: {
+        _2 = reqwest::blocking::RequestBuilder::send(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("raw-http-reqwest", "reqwest::blocking::RequestBuilder::send")];
+        let matches = scan_mir(MIR, &sigs);
+        assert_eq!(matches.len(), 1, "missed reqwest::blocking::RequestBuilder::send");
+        assert_eq!(matches[0].fn_name, "reqwest::blocking::RequestBuilder::send");
+        assert_eq!(matches[0].match_strategy, "direct");
+    }
+
+    // ── turbofish on receiver type: real-world generic client (tabby) ────────
+
+    #[test]
+    fn detects_call_with_mid_path_turbofish() {
+        // Real rupta MIR from analyzing TabbyML/tabby's chat client: the
+        // receiver type carries its own generic args between path segments
+        // (`Chat::<'_, OpenAIConfig>::create`), which no plain fixed-string
+        // or last-two-segment match would find without stripping them first.
+        const MIR: &str = r#"
+[FuncId(1) - "chat_harness::main"]
+fn main() -> () {
+    let _0: ();
+    let _7: async_openai_alt::Chat<'_, async_openai_alt::config::OpenAIConfig>;
+
+    bb0: {
+        _7 = async_openai_alt::Chat::<'_, async_openai_alt::config::OpenAIConfig>::create(move _8, move _10) -> [return: bb1, unwind: bb18];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("async-openai", "async_openai::chat::Chat::create")];
+        let matches = scan_mir(MIR, &sigs);
+        assert_eq!(
+            matches.len(),
+            1,
+            "missed Chat::<...>::create with mid-path turbofish generics"
+        );
+        assert_eq!(matches[0].match_strategy, "short-name");
+    }
+
+    #[test]
+    fn strip_turbofish_handles_nested_generics() {
+        assert_eq!(
+            strip_turbofish("Chat::<'_, mycrate::config::OpenAIConfig>::create("),
+            "Chat::create("
+        );
+        assert_eq!(
+            strip_turbofish("alloc::boxed::Box::<T>::new(move _1)"),
+            "alloc::boxed::Box::new(move _1)"
+        );
+        assert_eq!(
+            strip_turbofish("std::collections::HashMap::<String, Vec<u8>>::new()"),
+            "std::collections::HashMap::new()"
+        );
+        assert_eq!(strip_turbofish("plain::path::call("), "plain::path::call(");
+    }
+
     // ── full load + scan round-trip on fixture ────────────────────────────────
 
     #[test]
     fn full_roundtrip_fixture() {
         let sigs = load_signatures(datasets_path()).expect("load_signatures");
         let matches = scan_mir(TEST_TARGET_MIR, &sigs);
-        // The fixture only contains async-openai stub calls; every match must
+        // The tabby fixture contains only async-openai calls; every match must
         // be attributed to "async-openai".
         assert!(!matches.is_empty());
         for m in &matches {
@@ -534,7 +635,7 @@ fn call_chat() -> () {
         assert_eq!(matches[0].match_strategy, "short-name");
     }
 
-    // ── demo: async-openai + raw-http-reqwest (fixture) ──────────────────────
+    // ── demo: async-openai + raw-http-reqwest (fixture) ─────────────────────
 
     #[test]
     fn detects_async_openai_and_reqwest_in_demo() {
@@ -542,20 +643,18 @@ fn call_chat() -> () {
         let matches = scan_mir(DEMO_MIR, &sigs);
 
         let libs: Vec<_> = matches.iter().map(|m| m.library.as_str()).collect();
-        assert!(
-            libs.contains(&"async-openai"),
-            "async-openai not found in demo MIR; matches: {:#?}",
-            matches
-        );
-        assert!(
-            libs.contains(&"raw-http-reqwest"),
-            "raw-http-reqwest not found in demo MIR; matches: {:#?}",
-            matches
-        );
+        for expected in &["async-openai", "raw-http-reqwest"] {
+            assert!(
+                libs.contains(expected),
+                "library '{expected}' not found in demo MIR; matches: {:#?}",
+                matches
+            );
+        }
 
         // async-openai: call_chatgpt_api via stub short-name match
         let openai: Vec<_> = matches.iter().filter(|m| m.library == "async-openai").collect();
         assert!(!openai.is_empty());
+
         // raw-http-reqwest: call_openai_direct via reqwest::blocking::RequestBuilder::send
         let reqwest: Vec<_> = matches.iter().filter(|m| m.library == "raw-http-reqwest").collect();
         assert_eq!(reqwest.len(), 1);

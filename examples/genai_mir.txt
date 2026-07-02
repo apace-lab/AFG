@@ -1,0 +1,22 @@
+[FuncId(0) - "genai_demo::run"]
+// WARNING: This output format is intended for human consumers only
+// and is subject to change without notice. Knock yourself out.
+fn run() -> () {
+    let mut _0: ();
+    let _1: genai::Client;
+    let _2: genai::chat::ChatRequest;
+    let _3: std::option::Option<&genai::chat::ChatOptions>;
+    let mut _4: std::result::Result<genai::chat::ChatResponse, genai::Error>;
+
+    bb0: {
+        _4 = genai::Client::exec_chat(move _1, const "llama3", move _2, move _3) -> [return: bb1, unwind: bb2];
+    }
+
+    bb1: {
+        return;
+    }
+
+    bb2 (cleanup): {
+        resume;
+    }
+}

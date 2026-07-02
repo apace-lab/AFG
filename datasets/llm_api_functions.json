@@ -274,6 +274,15 @@
             ],
             "verified_via": "ambient",
             "taint_role": "catch-all for LPAs that call provider HTTP APIs directly without an SDK; narrower match should be applied via URL/host predicate once we add that capability to STPA"
+        },
+        {
+            "fn_name": "reqwest::blocking::RequestBuilder::send",
+            "return_type": "Result<Response, reqwest::Error>",
+            "parameter_type": [
+                "self"
+            ],
+            "verified_via": "ambient",
+            "taint_role": "blocking (sync) counterpart to reqwest::RequestBuilder::send; same catch-all role for LPAs using the blocking client"
         }
     ]
 }

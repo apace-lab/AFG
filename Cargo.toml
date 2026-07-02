@@ -9,6 +9,10 @@ repository = "https://github.com/apace-lab/AFG"
 keywords = ["pointer-analysis", "taint-analysis", "mir", "rust", "security"]
 categories = ["development-tools", "command-line-utilities"]
 
+[lib]
+name = "afg"
+path = "src/lib.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,3 +22,7 @@ regex = "1"
 [[bin]]
 name = "afg"
 path = "src/main.rs"
+
+[[bin]]
+name = "find_llm_calls"
+path = "src/bin/find_llm_calls.rs"
