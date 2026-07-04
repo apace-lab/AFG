@@ -139,6 +139,50 @@
         }
     ],
 
+    "clust": [
+        {
+            "fn_name": "clust::Client::create_a_message",
+            "return_type": "Result<MessagesResponseBody, ApiError>",
+            "parameter_type": [
+                "&self",
+                "MessagesRequestBody"
+            ],
+            "verified_via": "docs.rs:/clust (real crate: unofficial Anthropic/Claude client by mochi-neko, actively maintained)"
+        },
+        {
+            "fn_name": "clust::Client::create_a_message_stream",
+            "return_type": "Result<impl Stream<Item = Result<MessageChunk, ApiError>>, ApiError>",
+            "parameter_type": [
+                "&self",
+                "MessagesRequestBody"
+            ],
+            "verified_via": "docs.rs:/clust"
+        }
+    ],
+
+    "rig-core": [
+        {
+            "fn_name": "rig::completion::Prompt::prompt",
+            "return_type": "Result<String, PromptError>",
+            "parameter_type": [
+                "&self",
+                "&str"
+            ],
+            "verified_via": "docs.rig.rs/docs/concepts/completion",
+            "taint_role": "provider-agnostic entry point; rig-core is a multi-provider framework (Anthropic, OpenAI, Gemini, Cohere, Mistral, xAI, DeepSeek, Groq, Ollama, and more) built on the same CompletionModel trait, so this single signature covers call sites regardless of which provider client backs the Agent"
+        },
+        {
+            "fn_name": "rig::completion::CompletionModel::completion",
+            "return_type": "Result<CompletionResponse<Self::Response>, CompletionError>",
+            "parameter_type": [
+                "&self",
+                "CompletionRequest"
+            ],
+            "verified_via": "docs.rig.rs/docs/concepts/completion",
+            "taint_role": "lower-level trait method implemented per-provider (rig::providers::anthropic, ::openai, ::gemini, etc.); catches direct completion-model usage bypassing the Agent/Prompt wrapper"
+        }
+    ],
+
     "gemini-rust": [
         {
             "fn_name": "gemini_rust::Gemini::generate_content",
@@ -178,21 +222,14 @@
 
     "anthropic-sdk": [
         {
-            "fn_name": "anthropic_sdk::Client::messages",
-            "return_type": "Result<MessagesResponse, AnthropicError>",
+            "fn_name": "anthropic_sdk::Request::execute",
+            "return_type": "Result<(), AnthropicError>",
             "parameter_type": [
-                "&self",
-                "MessagesRequest"
+                "self",
+                "impl Fn(String) -> Future<Output = ()>"
             ],
-            "verified_via": "unverified — fill in from actual crate once an LPA example is added"
-        },
-        {
-            "fn_name": "anthropic_sdk::MessagesBuilder::send",
-            "return_type": "Result<MessagesResponse, AnthropicError>",
-            "parameter_type": [
-                "self"
-            ],
-            "verified_via": "unverified — multiple Anthropic Rust crates exist (anthropic, anthropic-sdk, misanthropic); concrete signatures depend on which is used"
+            "verified_via": "github:mixpeal/anthropic-sdk (real crate, crates.io name \"anthropic-sdk\") — builder-style API: Client::new(key).messages().model(...).build()?.execute(callback).await; the callback receives streamed text chunks. Corrects the prior guess of a `.send()` method returning a plain response struct — the real entry point is `.execute()` on the built Request and is streaming-callback-shaped, not request/response-shaped.",
+            "taint_role": "builder-entry; the actual black-box call is `.execute()`, reached only after `.build()?` on the request builder chain"
         }
     ],
 
@@ -202,41 +239,42 @@
             "return_type": "Result<Response, Error>",
             "parameter_type": [
                 "&self",
-                "Request"
+                "Prompt"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/misanthropic — confirmed Client::message(Prompt) and Client::stream(Prompt) as the two request methods; Prompt is a builder supporting messages built from (Role, String) tuples"
         },
         {
             "fn_name": "misanthropic::Client::stream",
             "return_type": "Result<ResponseStream, Error>",
             "parameter_type": [
                 "&self",
-                "Request"
+                "Prompt"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/misanthropic"
         }
     ],
 
     "llm-chain": [
         {
-            "fn_name": "llm_chain::executor::Executor::execute",
+            "fn_name": "llm_chain::traits::Executor::execute",
             "return_type": "Result<Output, ExecutorError>",
             "parameter_type": [
                 "&self",
-                "Options",
+                "&Options",
                 "&Prompt"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/llm-chain/latest/llm_chain/traits/trait.Executor.html — corrects the prior guess of module path `llm_chain::executor::Executor`: the `executor` module only holds the `executor!` construction macro, the trait itself lives in `llm_chain::traits`. execute() is async_trait-boxed (returns a pinned future); Result<Output, ExecutorError> is the future's Output type.",
+            "taint_role": "single-step black-box entry point; per-backend executors (llm-chain-openai, llm-chain-llama, etc.) all implement this trait method"
         },
         {
             "fn_name": "llm_chain::chains::sequential::Chain::run",
-            "return_type": "Result<Output, ChainError>",
+            "return_type": "Result<Output, SequentialChainError>",
             "parameter_type": [
                 "&self",
                 "Parameters",
                 "&Executor"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/llm-chain/latest/llm_chain/chains/sequential/struct.Chain.html — corrects the prior guess of error type `ChainError`; the real associated error is `SequentialChainError`"
         }
     ],
 
@@ -246,22 +284,23 @@
             "return_type": "Result<ChatResponse, Error>",
             "parameter_type": [
                 "&self",
-                "&str",
+                "impl Into<ModelSpec>",
                 "ChatRequest",
                 "Option<&ChatOptions>"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/genai — confirmed via Client::exec_chat docs; model param is generic `impl Into<ModelSpec>` (accepts &str literals, ModelIden, or ServiceTarget) rather than a bare &str, but a plain string literal argument still matches at a call site",
+            "taint_role": "genai is a multi-provider client (OpenAI, Anthropic, Gemini, xAI/Grok, Ollama, Groq, DeepSeek, Cohere, Together, and more) — this single signature covers call sites regardless of which backing provider is targeted"
         },
         {
             "fn_name": "genai::Client::exec_chat_stream",
             "return_type": "Result<ChatStreamResponse, Error>",
             "parameter_type": [
                 "&self",
-                "&str",
+                "impl Into<ModelSpec>",
                 "ChatRequest",
                 "Option<&ChatOptions>"
             ],
-            "verified_via": "unverified"
+            "verified_via": "docs.rs:/genai"
         }
     ],
 

@@ -27,8 +27,17 @@ overlap sites.
 cargo build --release
 ```
 
-Stable Rust. Dependencies: `serde`, `serde_json`, `clap`. The release binary
-is produced at `target/release/afg`.
+Stable Rust. Dependencies: `serde`, `serde_json`, `clap`, `regex`, `walkdir`.
+Produces four binaries in `target/release/`:
+
+- `afg` — the MUMP/STPA overlap detector (this section).
+- `find_llm_calls` — scans a RUPTA MIR dump for LLM API call sites. See
+  [`src/LLM_API_FINDER.md`](src/LLM_API_FINDER.md).
+- `find_llm_calls_js` — scans JS/TS source for LLM API call sites. See
+  [`src/LLM_API_FINDER_JS.md`](src/LLM_API_FINDER_JS.md).
+- `find_llm_calls_all` — runs both of the above and merges the output. See
+  [Running both scans
+  together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
 
 ## Usage
 
@@ -212,9 +221,21 @@ framework's data and implementation stay in one repository.
 - `JsTs_input_functions.json`, `otherlang_input_functions.json`: equivalents
   for JavaScript/TypeScript and other non-Rust languages.
 - `llm_api_functions.json`: LLM SDK call signatures (async-openai,
-  ollama-rs, gemini-rust, anthropic, etc.). Each entry is annotated with a
-  `verified_via` tag indicating whether the signature was confirmed against
-  upstream crate docs or is still pending verification.
+  ollama-rs, gemini-rust, anthropic-sdk, clust, misanthropic, rig-core,
+  genai, etc.). Each entry is annotated with a `verified_via` tag indicating
+  whether the signature was confirmed against upstream crate docs or is
+  still pending verification. Consumed by
+  [`find_llm_calls`](src/LLM_API_FINDER.md), which scans a RUPTA MIR dump for
+  matching call sites.
+- `llm_api_functions_js.json`: the JS/TS equivalent, consumed by
+  [`find_llm_calls_js`](src/LLM_API_FINDER_JS.md), which scans JS/TS source
+  text directly (no MIR/RUPTA step — RUPTA doesn't understand JS) for LLM SDK
+  and raw `fetch`/`axios` call sites. This covers the frontend half of
+  Tauri-style apps where `find_llm_calls` alone would report nothing, because
+  the LLM calls never appear in the compiled Rust binary at all.
+  `find_llm_calls_all` runs `find_llm_calls` and `find_llm_calls_js` together
+  in one pass and merges the output — see [Running both scans
+  together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
 
 ## License
 

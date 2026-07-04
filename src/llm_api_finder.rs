@@ -1,3 +1,4 @@
+use crate::provider_hints::find_provider_hint;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +31,13 @@ pub struct ApiMatch {
     pub match_strategy: String,
     pub callsite: CallSite,
     pub raw_line: String,
+    /// Best-effort provider guess for `raw-http-reqwest` matches, derived from
+    /// REST path suffixes seen in string literals earlier in the same
+    /// function (see `find_provider_hint`). `None` when no known suffix was
+    /// found, or for matches from libraries whose name already identifies
+    /// the provider/SDK.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_hint: Option<String>,
 }
 
 // ── Loader ────────────────────────────────────────────────────────────────────
@@ -148,6 +156,12 @@ static RE_CALL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s+(?:_\d+\s*=\s*)?(?P<callee>[^=(][^(]*)\(").unwrap()
 });
 
+// Captures every quoted string literal on a line, e.g. `const "..."` or a
+// format-string argument to `alloc::fmt::format`.
+static RE_STRING_LIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""((?:[^"\\]|\\.)*)""#).unwrap()
+});
+
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 /// Remove `::<...>` turbofish segments from a callee path, including nested
@@ -192,17 +206,25 @@ pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
     let mut current_func_id = String::from("unknown");
     let mut current_func_name = String::from("unknown");
     let mut current_bb = String::from("unknown");
+    // String literals seen so far in the current function, oldest first —
+    // feeds find_provider_hint for raw-http-reqwest matches. Reset whenever
+    // we enter a new function.
+    let mut func_string_literals: Vec<String> = Vec::new();
 
     for (lineno, line) in mir_content.lines().enumerate().map(|(i, l)| (i + 1, l)) {
         if let Some(caps) = RE_FUNC_HEADER.captures(line) {
             current_func_id = format!("FuncId({})", &caps[1]);
             current_func_name = caps[2].to_string();
             current_bb = String::from("unknown");
+            func_string_literals.clear();
             continue;
         }
         if let Some(caps) = RE_BB.captures(line) {
             current_bb = caps[1].to_string();
             continue;
+        }
+        for lit in RE_STRING_LIT.captures_iter(line) {
+            func_string_literals.push(lit[1].to_string());
         }
         let Some(caps) = RE_CALL.captures(line) else {
             continue;
@@ -215,6 +237,11 @@ pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
         'sig: for (sig, matchers) in &sig_matchers {
             for matcher in matchers {
                 if matcher.pattern.is_match(&callee_raw) {
+                    let provider_hint = if sig.library == "raw-http-reqwest" {
+                        find_provider_hint(&func_string_literals)
+                    } else {
+                        None
+                    };
                     matches.push(ApiMatch {
                         library: sig.library.clone(),
                         fn_name: sig.fn_name.clone(),
@@ -226,6 +253,7 @@ pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
                             line: lineno,
                         },
                         raw_line: line.trim().to_string(),
+                        provider_hint,
                     });
                     break 'sig;
                 }
@@ -285,6 +313,8 @@ mod tests {
         for expected in &[
             "async-openai",
             "ollama-rs",
+            "clust",
+            "rig-core",
             "gemini-rust",
             "anthropic-sdk",
             "misanthropic",
@@ -416,22 +446,118 @@ fn run_gemini_convo() -> () {
 
     #[test]
     fn detects_anthropic_sdk() {
+        // Builder-chain shape: Client::new(key).messages().model(...).build()?
+        // then .execute(callback). Only the final Request::execute call is
+        // what the signature matches against.
         const MIR: &str = r#"
 [FuncId(1) - "my_app::run_anthropic"]
 fn run_anthropic() -> () {
     let _0: ();
-    let _1: anthropic_sdk::Client;
-    let _2: std::result::Result<(), ()>;
+    let _1: anthropic_sdk::RequestBuilder;
+    let _2: std::result::Result<anthropic_sdk::Request, anthropic_sdk::AnthropicError>;
+    let _3: anthropic_sdk::Request;
+    let _4: std::result::Result<(), anthropic_sdk::AnthropicError>;
 
     bb0: {
-        _2 = anthropic_sdk::Client::messages(move _1, const ()) -> [return: bb1, unwind continue];
+        _2 = anthropic_sdk::RequestBuilder::build(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _4 = anthropic_sdk::Request::execute(move _3, move _5) -> [return: bb2, unwind continue];
+    }
+    bb2: { return; }
+}
+"#;
+        let sigs = vec![sig("anthropic-sdk", "anthropic_sdk::Request::execute")];
+        let matches = scan_mir(MIR, &sigs);
+        assert_eq!(matches.len(), 1, "missed anthropic_sdk::Request::execute");
+        assert_eq!(matches[0].match_strategy, "direct");
+    }
+
+    // ── clust: inline MIR snippet ─────────────────────────────────────────────
+
+    #[test]
+    fn detects_clust() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_clust"]
+fn run_clust() -> () {
+    let _0: ();
+    let _1: clust::Client;
+    let _2: clust::messages::MessagesRequestBody;
+    let _3: std::result::Result<(), ()>;
+
+    bb0: {
+        _3 = clust::Client::create_a_message(move _1, move _2) -> [return: bb1, unwind continue];
     }
     bb1: { return; }
 }
 "#;
-        let sigs = vec![sig("anthropic-sdk", "anthropic_sdk::Client::messages")];
+        let sigs = vec![sig("clust", "clust::Client::create_a_message")];
         let matches = scan_mir(MIR, &sigs);
-        assert!(!matches.is_empty(), "missed anthropic_sdk::Client::messages");
+        assert!(!matches.is_empty(), "missed clust::Client::create_a_message");
+    }
+
+    #[test]
+    fn detects_clust_stream() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_clust_stream"]
+fn run_clust_stream() -> () {
+    let _0: ();
+    let _1: clust::Client;
+    let _2: clust::messages::MessagesRequestBody;
+    let _3: std::result::Result<clust::messages::MessageChunkStream, clust::ApiError>;
+
+    bb0: {
+        _3 = clust::Client::create_a_message_stream(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("clust", "clust::Client::create_a_message_stream")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed clust::Client::create_a_message_stream");
+    }
+
+    // ── rig-core: inline MIR snippet ──────────────────────────────────────────
+
+    #[test]
+    fn detects_rig_core() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_rig_agent"]
+fn run_rig_agent() -> () {
+    let _0: ();
+    let _1: rig::agent::Agent<rig::providers::anthropic::completion::CompletionModel>;
+    let _2: std::result::Result<alloc::string::String, rig::completion::PromptError>;
+
+    bb0: {
+        _2 = rig::completion::Prompt::prompt(move _1, const "hello") -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("rig-core", "rig::completion::Prompt::prompt")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed rig::completion::Prompt::prompt");
+    }
+
+    #[test]
+    fn detects_rig_completion_model() {
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::run_rig_completion_model"]
+fn run_rig_completion_model() -> () {
+    let _0: ();
+    let _1: rig::providers::anthropic::completion::CompletionModel;
+    let _2: rig::completion::CompletionRequest;
+    let _3: std::result::Result<rig::completion::CompletionResponse<rig::providers::anthropic::completion::CompletionResponse>, rig::completion::CompletionError>;
+
+    bb0: {
+        _3 = rig::completion::CompletionModel::completion(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("rig-core", "rig::completion::CompletionModel::completion")];
+        let matches = scan_mir(MIR, &sigs);
+        assert!(!matches.is_empty(), "missed rig::completion::CompletionModel::completion");
     }
 
     // ── misanthropic: inline MIR snippet ─────────────────────────────────────
@@ -464,18 +590,18 @@ fn run_misanthropic() -> () {
 [FuncId(1) - "my_app::run_chain"]
 fn run_chain() -> () {
     let _0: ();
-    let _1: llm_chain::executor::Executor;
+    let _1: llm_chain::traits::Executor;
     let _2: std::result::Result<(), ()>;
 
     bb0: {
-        _2 = llm_chain::executor::Executor::execute(move _1, const (), const ()) -> [return: bb1, unwind continue];
+        _2 = llm_chain::traits::Executor::execute(move _1, const (), const ()) -> [return: bb1, unwind continue];
     }
     bb1: { return; }
 }
 "#;
-        let sigs = vec![sig("llm-chain", "llm_chain::executor::Executor::execute")];
+        let sigs = vec![sig("llm-chain", "llm_chain::traits::Executor::execute")];
         let matches = scan_mir(MIR, &sigs);
-        assert!(!matches.is_empty(), "missed llm_chain::executor::Executor::execute");
+        assert!(!matches.is_empty(), "missed llm_chain::traits::Executor::execute");
     }
 
     // ── genai: inline MIR snippet ─────────────────────────────────────────────
@@ -520,6 +646,70 @@ fn call_api_directly() -> () {
         let sigs = vec![sig("raw-http-reqwest", "reqwest::RequestBuilder::send")];
         let matches = scan_mir(MIR, &sigs);
         assert!(!matches.is_empty(), "missed reqwest::RequestBuilder::send");
+    }
+
+    // ── raw-http-reqwest: provider_hint from a runtime-built URL ─────────────
+
+    #[test]
+    fn provider_hint_survives_dynamic_base_url() {
+        // Mirrors GitButler's but-llm/src/anthropic.rs: the host is a runtime
+        // config value (`api_base`), never a MIR literal, but the format
+        // string still carries the literal "/messages" path suffix — that's
+        // what find_provider_hint should key on.
+        const MIR: &str = r#"
+[FuncId(1) - "but_llm::anthropic::send_message"]
+fn send_message() -> () {
+    let _0: ();
+    let _1: alloc::string::String;
+    let _2: reqwest::RequestBuilder;
+    let _3: std::result::Result<reqwest::Response, reqwest::Error>;
+
+    bb0: {
+        _1 = alloc::fmt::format(move _4) -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _2 = reqwest::Client::post::<alloc::string::String>(move _5, move _1) -> [return: bb2, unwind continue];
+    }
+    bb2: {
+        _3 = reqwest::RequestBuilder::send(move _2) -> [return: bb3, unwind continue];
+    }
+    bb3: { return; }
+}
+"#;
+        // The literal captured from the promoted format-string constant, as
+        // rupta would emit it ahead of the `alloc::fmt::format` call.
+        const MIR_WITH_LITERAL: &str = r#"
+[FuncId(1) - "but_llm::anthropic::send_message"]
+fn send_message() -> () {
+    let _0: ();
+
+    bb0: {
+        _1 = alloc::fmt::format(const "{}/messages") -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _2 = reqwest::Client::post::<alloc::string::String>(move _5, move _1) -> [return: bb2, unwind continue];
+    }
+    bb2: {
+        _3 = reqwest::RequestBuilder::send(move _2) -> [return: bb3, unwind continue];
+    }
+    bb3: { return; }
+}
+"#;
+        let sigs = vec![sig("raw-http-reqwest", "reqwest::RequestBuilder::send")];
+
+        // Sanity: with no literal at all, no hint should fire.
+        let matches = scan_mir(MIR, &sigs);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].provider_hint, None);
+
+        // With the format-string literal present, the Anthropic hint fires
+        // even though the host itself is a runtime variable.
+        let matches = scan_mir(MIR_WITH_LITERAL, &sigs);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].provider_hint.as_deref(),
+            Some("Anthropic (Claude Messages API)")
+        );
     }
 
     // ── raw-http-reqwest blocking: inline MIR snippet ────────────────────────

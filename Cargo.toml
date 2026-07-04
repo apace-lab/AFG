@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
+walkdir = "2"
 
 [[bin]]
 name = "afg"
@@ -26,3 +27,11 @@ path = "src/main.rs"
 [[bin]]
 name = "find_llm_calls"
 path = "src/bin/find_llm_calls.rs"
+
+[[bin]]
+name = "find_llm_calls_js"
+path = "src/bin/find_llm_calls_js.rs"
+
+[[bin]]
+name = "find_llm_calls_all"
+path = "src/bin/find_llm_calls_all.rs"

@@ -1,0 +1,106 @@
+{
+    "_schema_notes": {
+        "purpose": "Reference dataset of LLM SDK call-site shapes for JavaScript/TypeScript source, the companion to llm_api_functions.json (which covers Rust/MIR). Used by find_llm_calls_js to scan frontend code that a Rust-only tool like RUPTA can never see, e.g. the webview/JS side of a Tauri app.",
+        "usage": "find_llm_calls_js walks a directory of .js/.jsx/.ts/.tsx/.mjs/.cjs files. For each entry, it looks for the literal text `<pattern>(` on a line. If any of the entry's `packages` was also seen imported (via import/require/dynamic import) in the same file, match_strategy is \"call+import\"; otherwise \"call-only\". Both are reported — call-only is not discarded, since bundled/minified output often strips or rewrites import statements while leaving property-access chains intact.",
+        "match_rule": "line contains regex(escape(pattern) + \\s*\\()",
+        "verification_caveat": "Unlike llm_api_functions.json's Rust entries (checked against docs.rs/context7), these signatures come from general knowledge of each SDK's public API shape and have not been independently re-verified against current published docs. JS SDKs iterate faster than the Rust crates this pipeline was originally built for — spot-check patterns against the target's actual installed SDK version (package.json) before trusting a `call-only` match strongly.",
+        "raw_http_note": "The raw-http-fetch entry has no call patterns of its own; find_llm_calls_js treats any fetch()/axios()/XMLHttpRequest/http(s).request() call as a candidate and only reports it when a known LLM REST path suffix (shared PROVIDER_PATH_HINTS table, same one llm_api_finder.rs uses) is found in a string literal on a nearby line. This mirrors the Rust tool's raw-http-reqwest + provider_hint pairing, but for JS the hint is required by default (not just attached) because fetch()/axios() are far too common in ordinary frontend code to report unconditionally — see --all-http-calls in find_llm_calls_js to disable the gate."
+    },
+
+    "openai": {
+        "packages": ["openai"],
+        "calls": [
+            { "pattern": "chat.completions.create", "kind": "chat completion" },
+            { "pattern": "chat.completions.stream", "kind": "chat completion (stream helper)" },
+            { "pattern": "responses.create", "kind": "Responses API" },
+            { "pattern": "embeddings.create", "kind": "embedding" },
+            { "pattern": "images.generate", "kind": "image generation" },
+            { "pattern": "images.edit", "kind": "image edit" },
+            { "pattern": "audio.transcriptions.create", "kind": "transcription" },
+            { "pattern": "audio.speech.create", "kind": "text-to-speech" },
+            { "pattern": "completions.create", "kind": "legacy completion (also matches Anthropic's legacy shape)" }
+        ]
+    },
+
+    "anthropic": {
+        "packages": ["@anthropic-ai/sdk"],
+        "calls": [
+            { "pattern": "messages.create", "kind": "messages" },
+            { "pattern": "messages.stream", "kind": "messages (stream helper)" },
+            { "pattern": "messages.countTokens", "kind": "token counting (not a generation call, but SDK-confirming)" }
+        ]
+    },
+
+    "google-genai": {
+        "packages": ["@google/generative-ai", "@google/genai"],
+        "calls": [
+            { "pattern": "generateContent", "kind": "generate content" },
+            { "pattern": "generateContentStream", "kind": "generate content (stream)" },
+            { "pattern": "startChat", "kind": "chat session start" },
+            { "pattern": "sendMessage", "kind": "chat send (also matches unrelated messaging UIs without --require-import)" },
+            { "pattern": "sendMessageStream", "kind": "chat send (stream)" }
+        ]
+    },
+
+    "groq-sdk": {
+        "packages": ["groq-sdk"],
+        "calls": [
+            { "pattern": "chat.completions.create", "kind": "chat completion (OpenAI-compatible shape)" }
+        ]
+    },
+
+    "cohere-ai": {
+        "packages": ["cohere-ai"],
+        "calls": [
+            { "pattern": "chat", "kind": "chat", "require_import": true },
+            { "pattern": "generate", "kind": "generate", "require_import": true },
+            { "pattern": "embed", "kind": "embedding", "require_import": true },
+            { "pattern": "rerank", "kind": "rerank", "require_import": true }
+        ]
+    },
+
+    "mistralai": {
+        "packages": ["@mistralai/mistralai"],
+        "calls": [
+            { "pattern": "chat.complete", "kind": "chat completion" },
+            { "pattern": "chat.stream", "kind": "chat completion (stream)" },
+            { "pattern": "embeddings.create", "kind": "embedding" }
+        ]
+    },
+
+    "ollama-js": {
+        "packages": ["ollama"],
+        "calls": [
+            { "pattern": "chat", "kind": "chat", "require_import": true },
+            { "pattern": "generate", "kind": "generate", "require_import": true },
+            { "pattern": "embeddings", "kind": "embedding", "require_import": true }
+        ]
+    },
+
+    "vercel-ai-sdk": {
+        "packages": ["ai", "@ai-sdk/react"],
+        "calls": [
+            { "pattern": "generateText", "kind": "text generation" },
+            { "pattern": "streamText", "kind": "text generation (stream)" },
+            { "pattern": "generateObject", "kind": "structured generation" },
+            { "pattern": "streamObject", "kind": "structured generation (stream)" },
+            { "pattern": "embed", "kind": "embedding", "require_import": true },
+            { "pattern": "embedMany", "kind": "embedding (batch)" },
+            { "pattern": "sendMessage", "kind": "chat send (useChat()/Chat hook from @ai-sdk/react — same method name as google-genai's chat session send, disambiguate via import)", "require_import": true }
+        ]
+    },
+
+    "langchain-js": {
+        "packages": ["langchain", "@langchain/core", "@langchain/openai", "@langchain/anthropic", "@langchain/google-genai"],
+        "calls": [
+            { "pattern": "invoke", "kind": "runnable invoke (very generic — langchain Runnables, chains, and tools all share this method name)", "require_import": true },
+            { "pattern": "predict", "kind": "legacy LLM predict call", "require_import": true },
+            { "pattern": "call", "kind": "legacy chain call (extremely generic)", "require_import": true }
+        ]
+    },
+
+    "raw-http-fetch": {
+        "packages": [],
+        "calls": []
+    }
+}
