@@ -10,6 +10,7 @@
       "fn_name": "reqwest::RequestBuilder::send",
       "library": "raw-http-reqwest",
       "match_strategy": "short-name",
+      "provider_hint": "OpenAI-compatible endpoint (OpenAI or a compatible proxy: Ollama, LM Studio, OpenRouter, etc.)",
       "raw_line": "_41 = reqwest::blocking::RequestBuilder::send(const reqwest::blocking::RequestBuilder) -> [return: bb29, unwind: bb40];"
     },
     {
@@ -26,6 +27,6 @@
     }
   ],
   "mir_file": "examples/demo_mir.txt",
-  "signatures_loaded": 28,
+  "signatures_loaded": 31,
   "total_matches": 2
 }

@@ -28,7 +28,7 @@ cargo build --release
 ```
 
 Stable Rust. Dependencies: `serde`, `serde_json`, `clap`, `regex`, `walkdir`.
-Produces four binaries in `target/release/`:
+Produces eight binaries in `target/release/`:
 
 - `afg` — the MUMP/STPA overlap detector (this section).
 - `find_llm_calls` — scans a RUPTA MIR dump for LLM API call sites. See
@@ -38,6 +38,14 @@ Produces four binaries in `target/release/`:
 - `find_llm_calls_all` — runs both of the above and merges the output. See
   [Running both scans
   together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
+- `find_ac_points` — scans a RUPTA MIR dump for access-control (authn/authz)
+  call sites. See [`src/AC_FINDER.md`](src/AC_FINDER.md).
+- `find_ac_points_src` — scans Rust source directly for access-control call
+  sites, no MIR dump required. See [`src/AC_FINDER.md`](src/AC_FINDER.md).
+- `find_ac_points_js` — scans JS/TS source for access-control call sites. See
+  [`src/AC_FINDER_JS.md`](src/AC_FINDER_JS.md).
+- `find_ac_points_all` — runs `find_ac_points`, `find_ac_points_src`, and
+  `find_ac_points_js`, merging the output.
 
 ## Usage
 
@@ -209,17 +217,19 @@ fixed point runs in under 100 microseconds.
 
 ### Notes on the `datasets/` directory
 
-These JSON files are curated signature catalogues of entry-point functions
-that carry user input, grouped by source project or SDK. They are reference
-data for a future MUMP feature that auto-generates `mump_config.json` seeds
-by matching function signatures in a target program against these catalogues.
-The current `afg` tool does not read them; they are included so the
-framework's data and implementation stay in one repository.
+This directory holds curated signature catalogues, grouped by source project
+or SDK. Some are reference data for a future MUMP feature; others are already
+consumed at runtime by the `find_llm_calls*`/`find_ac_points*` binaries (noted
+per-entry below). The main `afg` tool (MUMP/STPA) does not read any of them.
 
 - `rust_input_functions.json`: user-input entry functions surveyed from
-  popular open-source Rust LPAs.
+  popular open-source Rust LPAs. Reference data for a future MUMP feature
+  that auto-generates `mump_config.json` seeds by matching function
+  signatures in a target program against these catalogues — not yet consumed
+  by any tool in this repository.
 - `JsTs_input_functions.json`, `otherlang_input_functions.json`: equivalents
-  for JavaScript/TypeScript and other non-Rust languages.
+  for JavaScript/TypeScript and other non-Rust languages. Also not yet
+  consumed.
 - `llm_api_functions.json`: LLM SDK call signatures (async-openai,
   ollama-rs, gemini-rust, anthropic-sdk, clust, misanthropic, rig-core,
   genai, etc.). Each entry is annotated with a `verified_via` tag indicating
@@ -236,6 +246,16 @@ framework's data and implementation stay in one repository.
   `find_llm_calls_all` runs `find_llm_calls` and `find_llm_calls_js` together
   in one pass and merges the output — see [Running both scans
   together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
+- `ac_functions.json`: access-control (authn/authz) call signatures —
+  actix-web-httpauth, jsonwebtoken, casbin-rs, oso, biscuit-auth, etc.
+  Consumed by [`find_ac_points`](src/AC_FINDER.md), which scans a RUPTA MIR
+  dump, and by `find_ac_points_src`, which scans Rust source directly (no
+  MIR/RUPTA step needed) for the same call sites.
+- `ac_functions_js.json`: the JS/TS equivalent, consumed by
+  [`find_ac_points_js`](src/AC_FINDER_JS.md), which scans JS/TS source text
+  directly for access-control middleware, guards, and raw HTTP authz calls.
+  `find_ac_points_all` runs all three (`find_ac_points`, `find_ac_points_src`,
+  `find_ac_points_js`) in one pass and merges the output.
 
 ## License
 

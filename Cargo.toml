@@ -35,3 +35,19 @@ path = "src/bin/find_llm_calls_js.rs"
 [[bin]]
 name = "find_llm_calls_all"
 path = "src/bin/find_llm_calls_all.rs"
+
+[[bin]]
+name = "find_ac_points"
+path = "src/bin/find_ac_points.rs"
+
+[[bin]]
+name = "find_ac_points_src"
+path = "src/bin/find_ac_points_src.rs"
+
+[[bin]]
+name = "find_ac_points_js"
+path = "src/bin/find_ac_points_js.rs"
+
+[[bin]]
+name = "find_ac_points_all"
+path = "src/bin/find_ac_points_all.rs"

@@ -1,0 +1,183 @@
+{
+    "_schema_notes": {
+        "purpose": "Reference dataset of access-control (authentication/authorization) entry-point functions for Rust programs, the AC-finder counterpart to llm_api_functions.json. Used by find_ac_points to scan a RUPTA MIR dump for calls into known auth/authz crates so a reviewer can quickly enumerate every access-control decision point in a codebase.",
+        "usage": "find_ac_points matches MIR call sites against fn_name using the same three-strategy regex approach as find_llm_calls (direct / angle-bracket / short-name — see llm_api_finder.rs for the exact matching rules, reused verbatim by ac_finder.rs).",
+        "match_rule": "same textual match as llm_api_functions.json: direct path match, angle-bracket turbofish match, or last-two-segment short-name match against the MIR callee text",
+        "category_values": "authentication | authorization | policy-enforcement | raw-http",
+        "verification_caveat": "These signatures come from general knowledge of each crate's public API shape and have not been independently re-verified against current published docs (no context7/docs.rs lookup was performed when this file was authored). Spot-check against the target's actual installed crate version before trusting a match."
+    },
+
+    "actix-web-httpauth": [
+        {
+            "fn_name": "actix_web_httpauth::middleware::HttpAuthentication::bearer",
+            "category": "authentication",
+            "return_type": "HttpAuthentication<T, F>",
+            "parameter_type": ["F"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "actix_web_httpauth::middleware::HttpAuthentication::basic",
+            "category": "authentication",
+            "return_type": "HttpAuthentication<T, F>",
+            "parameter_type": ["F"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "actix_web_httpauth::extractors::bearer::BearerAuth::token",
+            "category": "authentication",
+            "return_type": "&str",
+            "parameter_type": ["&self"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "actix-web-grants": [
+        {
+            "fn_name": "actix_web_grants::middleware::GrantsMiddleware::with_extractor",
+            "category": "authorization",
+            "return_type": "GrantsMiddleware<F, ReqBody>",
+            "parameter_type": ["F"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "actix_web_grants::authorities::AuthDetails::has_authority",
+            "category": "authorization",
+            "return_type": "bool",
+            "parameter_type": ["&self", "T"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "actix-identity": [
+        {
+            "fn_name": "actix_identity::Identity::id",
+            "category": "authentication",
+            "return_type": "Result<String, GetIdentityError>",
+            "parameter_type": ["&self"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "axum-login": [
+        {
+            "fn_name": "axum_login::AuthSession::login",
+            "category": "authentication",
+            "return_type": "Result<(), Error>",
+            "parameter_type": ["&mut self", "&User"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "axum_login::AuthnBackend::authenticate",
+            "category": "authentication",
+            "return_type": "Result<Option<Self::User>, Self::Error>",
+            "parameter_type": ["&self", "Self::Credentials"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "axum_login::AuthzBackend::get_user_permissions",
+            "category": "authorization",
+            "return_type": "Result<HashSet<Self::Permission>, Self::Error>",
+            "parameter_type": ["&self", "&Self::User"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "tower-http-auth": [
+        {
+            "fn_name": "tower_http::validate_request::ValidateRequestHeaderLayer::bearer",
+            "category": "authentication",
+            "return_type": "ValidateRequestHeaderLayer<ValidateBearerToken>",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "tower_http::auth::AsyncRequireAuthorizationLayer::new",
+            "category": "authorization",
+            "return_type": "AsyncRequireAuthorizationLayer<T>",
+            "parameter_type": ["T"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "jsonwebtoken": [
+        {
+            "fn_name": "jsonwebtoken::decode",
+            "category": "authentication",
+            "return_type": "Result<TokenData<T>, Error>",
+            "parameter_type": ["&str", "&DecodingKey", "&Validation"],
+            "verified_via": "general-knowledge",
+            "taint_role": "primary JWT verification entry point (signature + claims validation); the actual access-control decision"
+        },
+        {
+            "fn_name": "jsonwebtoken::decode_header",
+            "category": "authentication",
+            "return_type": "Result<Header, Error>",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge",
+            "taint_role": "reads the unverified header only (e.g. to pick a key id) — not itself a verification step, but commonly sits right before jsonwebtoken::decode"
+        }
+    ],
+
+    "casbin-rs": [
+        {
+            "fn_name": "casbin::CoreApi::enforce",
+            "category": "policy-enforcement",
+            "return_type": "Result<bool>",
+            "parameter_type": ["&self", "T"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "casbin::CoreApi::enforce_mut",
+            "category": "policy-enforcement",
+            "return_type": "Result<bool>",
+            "parameter_type": ["&mut self", "T"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "oso": [
+        {
+            "fn_name": "oso::Oso::is_allowed",
+            "category": "policy-enforcement",
+            "return_type": "Result<bool>",
+            "parameter_type": ["&self", "Actor", "Action", "Resource"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "biscuit-auth": [
+        {
+            "fn_name": "biscuit_auth::Authorizer::authorize",
+            "category": "policy-enforcement",
+            "return_type": "Result<usize, error::Token>",
+            "parameter_type": ["&mut self"],
+            "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "biscuit_auth::Biscuit::authorizer",
+            "category": "authorization",
+            "return_type": "Result<Authorizer, error::Token>",
+            "parameter_type": ["&self"],
+            "verified_via": "general-knowledge"
+        }
+    ],
+
+    "raw-http-authz": [
+        {
+            "fn_name": "reqwest::RequestBuilder::send",
+            "category": "raw-http",
+            "return_type": "Result<Response, reqwest::Error>",
+            "parameter_type": ["self"],
+            "verified_via": "ambient",
+            "taint_role": "catch-all for calls to an external authn/authz service (OAuth2/OIDC provider, OPA, Vault, Keycloak) made without an SDK; ac_hint narrows this using nearby string literals via ac_hints.rs"
+        },
+        {
+            "fn_name": "reqwest::blocking::RequestBuilder::send",
+            "category": "raw-http",
+            "return_type": "Result<Response, reqwest::Error>",
+            "parameter_type": ["self"],
+            "verified_via": "ambient",
+            "taint_role": "blocking counterpart to reqwest::RequestBuilder::send; same catch-all role"
+        }
+    ]
+}

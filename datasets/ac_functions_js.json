@@ -1,0 +1,121 @@
+{
+    "_schema_notes": {
+        "purpose": "Reference dataset of access-control (authentication/authorization) call-site shapes for JavaScript/TypeScript source, the AC-finder counterpart to llm_api_functions_js.json. Used by find_ac_points_js to scan frontend/backend JS/TS code for auth middleware, guards, decorators, and permission checks that RUPTA can never see (and that a Rust-only scan of a mixed Tauri-style app would miss entirely).",
+        "usage": "find_ac_points_js walks a directory of .js/.jsx/.ts/.tsx/.mjs/.cjs files. For each entry, it looks for the literal text `<pattern>(` on a line. If any of the entry's `packages` was also seen imported (via import/require/dynamic import) in the same file, match_strategy is \"call+import\"; otherwise \"call-only\". Both are reported for require_import:false entries; require_import:true entries are only reported when the import is confirmed.",
+        "match_rule": "line contains regex(escape(pattern) + \\s*\\()",
+        "category_values": "authentication | authorization | policy-enforcement | session | raw-http",
+        "verification_caveat": "These signatures come from general knowledge of each package's public API shape and have not been independently re-verified against current published docs. Spot-check against the target's actual installed version (package.json) before trusting a call-only match strongly.",
+        "raw_http_note": "The raw-http-authz entry has no call patterns of its own; find_ac_points_js treats any fetch()/axios()/http(s).request() call as a candidate and only reports it when a known access-control REST path suffix (shared AC_PATH_HINTS table in ac_hints.rs) is found in a string literal on a nearby line — mirrors raw-http-fetch in llm_api_functions_js.json. See --all-http-calls in find_ac_points_js to report every such call regardless of a path hint.",
+        "generic_checks_note": "generic-authz-checks has no associated npm package (it catches hand-rolled, in-house auth helpers like requireAuth()/hasRole()), so it can never be import-confirmed — every match is reported as call-only. This is intentionally noisier than the SDK-backed entries; read raw_line to judge relevance, and expect some hits on unrelated code that happens to share a common function name."
+    },
+
+    "passport": {
+        "packages": ["passport"],
+        "calls": [
+            { "pattern": "passport.authenticate", "kind": "authentication middleware", "category": "authentication" },
+            { "pattern": "passport.authorize", "kind": "secondary-strategy authorization middleware", "category": "authorization" }
+        ]
+    },
+
+    "jsonwebtoken": {
+        "packages": ["jsonwebtoken"],
+        "calls": [
+            { "pattern": "jwt.verify", "kind": "JWT verification", "category": "authentication" },
+            { "pattern": "jsonwebtoken.verify", "kind": "JWT verification", "category": "authentication" },
+            { "pattern": "verify", "kind": "JWT verification (generic name — gated by import)", "category": "authentication", "require_import": true }
+        ]
+    },
+
+    "express-jwt": {
+        "packages": ["express-jwt"],
+        "calls": [
+            { "pattern": "expressjwt", "kind": "JWT auth middleware factory", "category": "authentication" },
+            { "pattern": "jwt", "kind": "JWT auth middleware factory (aliased import — gated by import)", "category": "authentication", "require_import": true }
+        ]
+    },
+
+    "nestjs-authz": {
+        "packages": ["@nestjs/common", "@nestjs/passport", "@nestjs/core"],
+        "calls": [
+            { "pattern": "UseGuards", "kind": "route/controller guard decorator", "category": "authorization" },
+            { "pattern": "CanActivate", "kind": "guard interface implementation", "category": "authorization" },
+            { "pattern": "Roles", "kind": "role decorator (generic name — gated by import)", "category": "authorization", "require_import": true },
+            { "pattern": "SetMetadata", "kind": "metadata decorator (often used to attach role/permission requirements for a guard)", "category": "authorization", "require_import": true }
+        ]
+    },
+
+    "casl": {
+        "packages": ["@casl/ability"],
+        "calls": [
+            { "pattern": "defineAbility", "kind": "ability/permission definition", "category": "authorization" },
+            { "pattern": "createMongoAbility", "kind": "ability/permission definition", "category": "authorization" },
+            { "pattern": "ForbiddenError.from", "kind": "authorization enforcement", "category": "authorization" },
+            { "pattern": "can", "kind": "permission check (generic name — gated by import)", "category": "authorization", "require_import": true },
+            { "pattern": "cannot", "kind": "negative permission check (generic name — gated by import)", "category": "authorization", "require_import": true }
+        ]
+    },
+
+    "casbin-node": {
+        "packages": ["casbin"],
+        "calls": [
+            { "pattern": "enforceSync", "kind": "policy enforcement check", "category": "policy-enforcement" },
+            { "pattern": "enforce", "kind": "policy enforcement check (generic name — gated by import)", "category": "policy-enforcement", "require_import": true }
+        ]
+    },
+
+    "next-auth": {
+        "packages": ["next-auth", "next-auth/react", "@auth/core", "@auth/nextjs"],
+        "calls": [
+            { "pattern": "getServerSession", "kind": "server-side session/authentication check", "category": "session" },
+            { "pattern": "withAuth", "kind": "middleware auth wrapper", "category": "authentication" },
+            { "pattern": "auth", "kind": "Auth.js v5 session helper (generic name — gated by import)", "category": "session", "require_import": true }
+        ]
+    },
+
+    "firebase-admin-auth": {
+        "packages": ["firebase-admin", "firebase-admin/auth"],
+        "calls": [
+            { "pattern": "verifyIdToken", "kind": "ID token verification", "category": "authentication" },
+            { "pattern": "checkRevoked", "kind": "token revocation check", "category": "authentication" },
+            { "pattern": "getUser", "kind": "user lookup (generic name — often paired with a role/claims check, gated by import)", "category": "authentication", "require_import": true }
+        ]
+    },
+
+    "auth0": {
+        "packages": ["express-openid-connect", "@auth0/nextjs-auth0"],
+        "calls": [
+            { "pattern": "requiresAuth", "kind": "authentication middleware", "category": "authentication" },
+            { "pattern": "withApiAuthRequired", "kind": "API route auth wrapper", "category": "authentication" },
+            { "pattern": "withPageAuthRequired", "kind": "page auth wrapper", "category": "authentication" },
+            { "pattern": "getSession", "kind": "session/authentication check (generic name — gated by import)", "category": "session", "require_import": true }
+        ]
+    },
+
+    "connect-ensure-login": {
+        "packages": ["connect-ensure-login"],
+        "calls": [
+            { "pattern": "ensureLoggedIn", "kind": "authentication guard", "category": "authentication" },
+            { "pattern": "ensureLoggedOut", "kind": "authentication guard", "category": "authentication" }
+        ]
+    },
+
+    "generic-authz-checks": {
+        "packages": [],
+        "calls": [
+            { "pattern": "isAuthenticated", "kind": "custom authentication check (no SDK)", "category": "authentication" },
+            { "pattern": "requireAuth", "kind": "custom authentication guard (no SDK)", "category": "authentication" },
+            { "pattern": "requireRole", "kind": "custom role guard (no SDK)", "category": "authorization" },
+            { "pattern": "requirePermission", "kind": "custom permission guard (no SDK)", "category": "authorization" },
+            { "pattern": "hasRole", "kind": "custom role check (no SDK)", "category": "authorization" },
+            { "pattern": "hasPermission", "kind": "custom permission check (no SDK)", "category": "authorization" },
+            { "pattern": "checkPermission", "kind": "custom permission check (no SDK)", "category": "authorization" },
+            { "pattern": "isAuthorized", "kind": "custom authorization check (no SDK)", "category": "authorization" },
+            { "pattern": "isAdmin", "kind": "custom role check (no SDK)", "category": "authorization" }
+        ]
+    },
+
+    "raw-http-authz": {
+        "packages": [],
+        "calls": []
+    }
+}
