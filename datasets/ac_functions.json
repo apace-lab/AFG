@@ -162,6 +162,53 @@
         }
     ],
 
+    "ldap3": [
+        {
+            "fn_name": "ldap3::LdapConn::simple_bind",
+            "category": "authentication",
+            "return_type": "Result<LdapResult>",
+            "parameter_type": ["&mut self", "&str", "&str"],
+            "verified_via": "docs.rs"
+        },
+        {
+            "fn_name": "ldap3::Ldap::simple_bind",
+            "category": "authentication",
+            "return_type": "Result<LdapResult>",
+            "parameter_type": ["&mut self", "&str", "&str"],
+            "verified_via": "docs.rs"
+        }
+    ],
+
+    "oauth2": [
+        {
+            "fn_name": "oauth2::Client::exchange_code",
+            "category": "authentication",
+            "return_type": "CodeTokenRequest",
+            "parameter_type": ["&self", "AuthorizationCode"],
+            "verified_via": "docs.rs"
+        }
+    ],
+
+    "bcrypt": [
+        {
+            "fn_name": "bcrypt::verify",
+            "category": "authentication",
+            "return_type": "BcryptResult<bool>",
+            "parameter_type": ["&[u8]", "&str"],
+            "verified_via": "docs.rs"
+        }
+    ],
+
+    "argon2": [
+        {
+            "fn_name": "argon2::PasswordVerifier::verify_password",
+            "category": "authentication",
+            "return_type": "Result<(), password_hash::Error>",
+            "parameter_type": ["&self", "&[u8]", "&PasswordHash"],
+            "verified_via": "docs.rs"
+        }
+    ],
+
     "raw-http-authz": [
         {
             "fn_name": "reqwest::RequestBuilder::send",
