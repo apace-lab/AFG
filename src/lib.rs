@@ -1,5 +1,7 @@
 pub mod ac_finder;
 pub mod ac_finder_js;
+#[cfg(feature = "llvm-ir-scan")]
+pub mod ac_finder_llvm;
 pub mod ac_finder_rs_src;
 pub mod ac_hints;
 pub mod llm_api_finder;

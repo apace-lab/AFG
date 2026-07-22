@@ -1,11 +1,13 @@
 # AC (Access Control) Finder
 
-A tool that scans a Rust program's compiled output and reports every location
-where it performs an access-control decision — authentication (verifying
-identity: JWT/session checks), authorization (RBAC/ABAC permission checks),
-or policy enforcement (Casbin/Oso-style engines). No source code changes
-required — it works from RUPTA's static analysis output, exactly like the
-sibling [LLM API Finder](./LLM_API_FINDER.md).
+A family of tools that scan a Rust (or, via the LLVM-IR path, C/C++)
+program's source, compiled MIR, or compiled LLVM IR and report every
+location where it performs an access-control decision — authentication
+(verifying identity: JWT/session checks), authorization (RBAC/ABAC
+permission checks), or policy enforcement (Casbin/Oso-style engines). No
+source code changes required — the MIR path works from RUPTA's static
+analysis output, exactly like the sibling [LLM API
+Finder](./LLM_API_FINDER.md).
 
 ## What it does
 
@@ -30,8 +32,16 @@ directly](#scanning-rust-source-directly) below.
 For the JS/TS side of a mixed Rust+frontend app, see the companion tool
 [`find_ac_points_js`](./AC_FINDER_JS.md) — RUPTA only analyzes Rust, so it
 cannot see access-control middleware/guards/decorators written in a JS/TS
-frontend or a Node.js backend. `find_ac_points_all` runs all three scans in
-one pass and merges the results.
+frontend or a Node.js backend.
+
+If you have (or can generate) a real LLVM IR module instead of a RUPTA MIR
+dump — text `.ll` or bitcode `.bc`, from `rustc --emit=llvm-ir`/`llvm-bc` or
+from clang for a C/C++ target — `find_ac_points_llvm` scans that directly, no
+RUPTA toolchain needed. See [Scanning real LLVM
+IR](#scanning-real-llvm-ir) below.
+
+`find_ac_points_all` runs all of the above scans it's given paths for in one
+pass and merges the results.
 
 ## Supported libraries
 
@@ -46,6 +56,10 @@ one pass and merges the results.
 | `casbin-rs` | Casbin policy enforcement (`enforce`, `enforce_mut`) |
 | `oso` | Oso policy engine (`is_allowed`) |
 | `biscuit-auth` | Biscuit token authorization (`Authorizer::authorize`) |
+| `ldap3` | LDAP bind/authentication (`LdapConn::simple_bind`, `Ldap::simple_bind`) |
+| `oauth2` | OAuth2 authorization-code token exchange (`Client::exchange_code`) |
+| `bcrypt` | bcrypt password hash verification (`bcrypt::verify`) |
+| `argon2` | Argon2 password hash verification (`PasswordVerifier::verify_password`) |
 | `raw-http-authz` | Direct HTTP calls to an external auth service (no SDK) |
 
 ## Build
@@ -56,6 +70,9 @@ cargo build --release
 
 Produces `find_ac_points`, `find_ac_points_src`, `find_ac_points_js`, and
 `find_ac_points_all` in `target/release/`, alongside the LLM finder binaries.
+
+`find_ac_points_llvm` is not part of this default build — see [Scanning real
+LLVM IR](#scanning-real-llvm-ir) for why and how to opt in.
 
 ## Usage
 
@@ -145,6 +162,163 @@ and match-strategy shape reflects real source rather than MIR:
 the MIR and JS/TS scans and merges all three into one report, under
 `rust_src_matches`.
 
+## Scanning real LLVM IR
+
+`find_ac_points_llvm` scans an actual LLVM IR module — text `.ll` or bitcode
+`.bc` — using the [`llvm-ir`](https://github.com/cdisselkoen/llvm-ir) crate
+to parse it into typed structures and walk `call` instructions directly,
+rather than regex-scanning a text dump the way `find_ac_points` does. It
+reuses the same `ac_functions.json` catalogue: each `call` target's mangled
+linkage name is demangled with
+[`rustc-demangle`](https://github.com/rust-lang/rustc-demangle) before being
+matched, so the catalogue's plain Rust paths (`jsonwebtoken::decode`) line up
+with what the IR actually carries (`_ZN12jsonwebtoken6decodeE`).
+
+This is the tool to reach for when you have LLVM IR from a build that never
+goes through RUPTA at all — e.g. `rustc --emit=llvm-ir` directly, or a
+C/C++ target compiled with clang that links against a C access-control
+library. See `src/ac_finder_llvm.rs` for the implementation.
+
+### Why it's opt-in
+
+Unlike every other dependency in this repository, `llvm-ir` pulls in
+`llvm-sys`, which needs a **real LLVM installation** at build time (headers,
+libraries, and `llvm-config` on `PATH`), pinned to one specific major
+version. That's a system requirement plain `cargo build` has never had here,
+so it's gated behind an opt-in Cargo feature, `llvm-ir-scan`, rather than a
+default dependency — without it, `cargo build`/`cargo test` behave exactly
+as before for everyone who doesn't need this scanner.
+
+```sh
+# needs LLVM 18 installed (llvm-config on PATH) -- this crate is pinned to
+# the "llvm-18" feature of llvm-ir; see "Retargeting a different LLVM
+# version" below if you're on a different one
+cargo build --release --features llvm-ir-scan
+```
+
+This produces `find_ac_points_llvm` in `target/release/`, and also enables
+the `--llvm-ir` flag on `find_ac_points_all` (a 4th stage merged in
+alongside the MIR/Rust-source/JS-TS scans). Building without the feature
+still produces `find_ac_points_all`, but passing `--llvm-ir` to it is then a
+runtime error telling you to rebuild with `--features llvm-ir-scan`.
+
+### Getting a working LLVM 18 toolchain
+
+`llvm-sys` needs `llvm-config` on `PATH` (or `LLVM_SYS_181_PREFIX` pointing
+at a prefix containing it) at build time — not just the LLVM tools/DLLs, a
+full development install with `llvm-config` and the per-component static
+libraries.
+
+- **Linux**: your distro's `llvm-18-dev` package (Debian/Ubuntu) or
+  equivalent is normally sufficient. On Debian/Ubuntu you also need
+  `libpolly-18-dev` and `libzstd-dev` for a full static link (`llvm-18-dev`
+  alone builds but fails at link time with "could not find native static
+  library `Polly`" / "unable to find library -lzstd" otherwise).
+- **Windows**: the official LLVM installer (`winget install LLVM.LLVM`, or
+  the `.exe` from [releases.llvm.org](https://releases.llvm.org/)) does
+  **not** ship `llvm-config.exe` or per-component static libs — only DLL
+  import libraries and no `include/` headers — so `llvm-sys` cannot build
+  against it regardless of `LLVM_SYS_181_PREFIX`. Either build LLVM 18 from
+  source (CMake + Ninja + MSVC), or use WSL and a Linux `llvm-18-dev`
+  package as above; there's no shortcut through the native Windows
+  installer today.
+- **macOS**: Homebrew's `llvm@18` includes `llvm-config`; you'll likely need
+  `LLVM_SYS_181_PREFIX=$(brew --prefix llvm@18)` since it's keg-only.
+
+### Retargeting a different LLVM version
+
+This is pinned to LLVM 18 in `Cargo.toml`:
+
+```toml
+llvm-ir = { version = "0.11", features = ["llvm-18"], optional = true }
+```
+
+If your toolchain is on a different LLVM major version, change `"llvm-18"`
+to the matching feature (`llvm-ir` 0.11 supports `llvm-9` through `llvm-19`
+at the time of writing — check
+[`llvm-ir`'s `Cargo.toml`](https://github.com/cdisselkoen/llvm-ir/blob/master/Cargo.toml)
+for the current range). Only one `llvm-N` feature can be active at a time.
+
+### `find_ac_points_llvm` usage
+
+```sh
+./target/release/find_ac_points_llvm --ir <MODULE.ll|MODULE.bc> [--datasets <DIR>] [--out <FILE>]
+
+# or with cargo directly
+cargo run --release --features llvm-ir-scan --bin find_ac_points_llvm -- --ir <MODULE.ll> [--datasets <DIR>] [--out <FILE>]
+```
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--ir` | yes | — | LLVM IR module to scan: text (`.ll`) or bitcode (`.bc`), dispatched on extension |
+| `--datasets` | no | `datasets/` | Folder containing `ac_functions.json` |
+| `--out` | no | `ac_matches_llvm.json` | Where to write the JSON report |
+
+For a worked example — real `rustc --emit=llvm-ir` output (not hand-written),
+exercising the `direct` and `angle-bracket` match strategies against a real
+trait-impl call site — see `examples/ac_demo_llvm.ll`, its source in
+`examples/src/ac_demo_llvm/`, and
+[`examples/ac_demo_llvm.expected.md`](../examples/ac_demo_llvm.expected.md)
+(which also documents the exact `rustc` commands used to regenerate it).
+
+### Generating an LLVM IR module
+
+From a Rust crate:
+
+```sh
+rustc --edition 2021 --crate-type lib --emit=llvm-ir -o out.ll src/lib.rs
+# or, via cargo, for a whole crate:
+RUSTFLAGS="--emit=llvm-ir" cargo build --release
+# .ll files land under target/release/deps/*.ll
+```
+
+From a C/C++ target, with clang:
+
+```sh
+clang -S -emit-llvm -o out.ll src/main.c
+```
+
+Add `-g` (rustc) or `-g` (clang) to carry source file/line debug info through
+into the IR — `find_ac_points_llvm` reports `callsite.file`/`callsite.line`
+when present, and falls back to basic-block name + instruction index when
+not.
+
+### Match strategies and JSON shape
+
+Reuses the three match strategies conceptually (`direct`, `angle-bracket`,
+`short-name`) from `find_ac_points`, applied to the demangled callee name
+instead of a MIR text line. Each match in `ac_matches_llvm.json` looks like:
+
+```json
+{
+  "library": "jsonwebtoken",
+  "fn_name": "jsonwebtoken::decode",
+  "category": "authentication",
+  "match_strategy": "direct",
+  "callsite": {
+    "function": "my_app::verify_token",
+    "block": "%bb0",
+    "instruction_index": 3,
+    "file": "src/main.rs",
+    "line": 42
+  },
+  "mangled_name": "_ZN...",
+  "demangled_name": "jsonwebtoken::decode"
+}
+```
+
+- `mangled_name` / `demangled_name` — the callee's raw linkage name and what
+  it demangled to (what was actually matched against the catalogue), so you
+  can audit a surprising match or miss.
+- `callsite.file` / `callsite.line` — only present when the module carries
+  `!dbg` debug info for that instruction (`skip_serializing_if` omits them
+  otherwise, same convention as `ac_hint` elsewhere in this tool).
+- `ac_hint` — always absent from this scanner today; see [Known blind
+  spots](#known-blind-spots).
+
+`find_ac_points_all --llvm-ir <MODULE.ll>` runs this scan alongside the
+other three and merges it into `llvm_matches` in the combined report.
+
 ## JSON output
 
 Each match in `ac_matches.json` looks like:
@@ -205,7 +379,18 @@ know enforces access control, check for this before concluding there's a gap.
 **Trait-object dispatch** — like the LLM finder, calls made through a `dyn
 Trait` or generic bound resolved only at monomorphization time can appear
 under a different symbol shape than the cataloged one; `short-name` matching
-covers the common cases but isn't exhaustive.
+covers the common cases but isn't exhaustive. `find_ac_points_llvm` has the
+equivalent gap for indirect calls (function pointers, vtable dispatch): the
+callee is a local SSA value rather than a `GlobalReference`, so there's no
+static symbol to demangle and match against the catalogue.
+
+**`find_ac_points_llvm` has no `ac_hint` for `raw-http-authz` matches** —
+`find_ac_points`/`find_ac_points_src` guess the access-control service behind
+a raw HTTP call by scanning nearby string literals for a known REST path
+suffix (see `ac_hint` in [JSON output](#json-output)). Reconstructing "nearby
+string literals" from LLVM IR means resolving `getelementptr` chains into
+constant globals holding `[N x i8]` byte arrays, which this scanner doesn't
+attempt yet — `raw-http-authz` matches from it always carry `ac_hint: null`.
 
 ## Troubleshooting
 

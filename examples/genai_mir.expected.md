@@ -9,7 +9,7 @@ Run:
 ## Terminal output
 
 ```
-[find_llm_calls] loaded 28 signatures from datasets/llm_api_functions.json
+[find_llm_calls] loaded 31 signatures from datasets/llm_api_functions.json
 Found 1 LLM API call(s) in examples/genai_mir.txt:
 
   Found genai API call (genai::Client::exec_chat) at FuncId(0) (genai_demo::run) / bb0 [line 12]
@@ -35,7 +35,7 @@ Found 1 LLM API call(s) in examples/genai_mir.txt:
     }
   ],
   "mir_file": "examples/genai_mir.txt",
-  "signatures_loaded": 28,
+  "signatures_loaded": 31,
   "total_matches": 1
 }
 ```

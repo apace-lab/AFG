@@ -20,6 +20,17 @@ clap = { version = "4", features = ["derive"] }
 regex = "1"
 walkdir = "2"
 
+# Pulls in llvm-sys, which needs a matching real LLVM install (llvm-config on
+# PATH) at build time -- unlike every other dependency here. Kept optional
+# and off by default so `cargo build`/`cargo test` without --features keeps
+# working for anyone without LLVM installed. Pinned to LLVM 18; see
+# src/AC_FINDER.md#scanning-real-llvm-ir for how to retarget another version.
+llvm-ir = { version = "0.11", features = ["llvm-18"], optional = true }
+rustc-demangle = { version = "0.1", optional = true }
+
+[features]
+llvm-ir-scan = ["dep:llvm-ir", "dep:rustc-demangle"]
+
 [[bin]]
 name = "afg"
 path = "src/main.rs"
@@ -51,3 +62,8 @@ path = "src/bin/find_ac_points_js.rs"
 [[bin]]
 name = "find_ac_points_all"
 path = "src/bin/find_ac_points_all.rs"
+
+[[bin]]
+name = "find_ac_points_llvm"
+path = "src/bin/find_ac_points_llvm.rs"
+required-features = ["llvm-ir-scan"]

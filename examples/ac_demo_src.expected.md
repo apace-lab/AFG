@@ -18,7 +18,7 @@ Run:
 ## Terminal output
 
 ```
-[find_ac_points_src] loaded 20 signatures from datasets/ac_functions.json
+[find_ac_points_src] loaded 25 signatures from datasets/ac_functions.json
 Found 11 access-control call site(s) in examples/src/ac_demo.rs:
 
   Found actix-web-httpauth [authentication] call (actix_web_httpauth::middleware::HttpAuthentication::bearer) in fn build_bearer_middleware at examples/src/ac_demo.rs:18 [type-method]
@@ -223,7 +223,7 @@ default. See [`--all-http-calls`](#--all-http-calls-variant) below.
       "raw_line": "client.post(url).form(&[(\"token\", token)]).send().await"
     }
   ],
-  "signatures_loaded": 20,
+  "signatures_loaded": 25,
   "src": "examples/src/ac_demo.rs",
   "total_matches": 11
 }

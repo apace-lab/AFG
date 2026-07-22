@@ -9,7 +9,7 @@ Run:
 ## Terminal output
 
 ```
-[find_llm_calls] loaded 28 signatures from datasets/llm_api_functions.json
+[find_llm_calls] loaded 31 signatures from datasets/llm_api_functions.json
 Found 1 LLM API call(s) in examples/tabby_direct_mir.txt:
 
   Found async-openai API call (async_openai::chat::Chat::create) at FuncId(928) (chat_harness::main::{closure#0}<std::future::ResumeTy, (), (), CoroutineWitness(DefId(0:4 ~ chat_harness[7f78]::main::{closure#0}), []), ()>) / bb5 [line 68563]
@@ -35,7 +35,7 @@ Found 1 LLM API call(s) in examples/tabby_direct_mir.txt:
     }
   ],
   "mir_file": "examples/tabby_direct_mir.txt",
-  "signatures_loaded": 28,
+  "signatures_loaded": 31,
   "total_matches": 1
 }
 ```

@@ -28,7 +28,9 @@ cargo build --release
 ```
 
 Stable Rust. Dependencies: `serde`, `serde_json`, `clap`, `regex`, `walkdir`.
-Produces eight binaries in `target/release/`:
+Produces eight binaries in `target/release/`, plus a ninth
+(`find_ac_points_llvm`) if you opt into the `llvm-ir-scan` feature — see its
+entry below:
 
 - `afg` — the MUMP/STPA overlap detector (this section).
 - `find_llm_calls` — scans a RUPTA MIR dump for LLM API call sites. See
@@ -44,8 +46,14 @@ Produces eight binaries in `target/release/`:
   sites, no MIR dump required. See [`src/AC_FINDER.md`](src/AC_FINDER.md).
 - `find_ac_points_js` — scans JS/TS source for access-control call sites. See
   [`src/AC_FINDER_JS.md`](src/AC_FINDER_JS.md).
-- `find_ac_points_all` — runs `find_ac_points`, `find_ac_points_src`, and
-  `find_ac_points_js`, merging the output.
+- `find_ac_points_all` — runs `find_ac_points`, `find_ac_points_src`,
+  `find_ac_points_js`, and (with `--features llvm-ir-scan`)
+  `find_ac_points_llvm`, merging the output.
+- `find_ac_points_llvm` — scans a real LLVM IR module (`.ll`/`.bc`) for
+  access-control call sites, using the [`llvm-ir`](https://github.com/cdisselkoen/llvm-ir)
+  crate. Opt-in only — `cargo build --release --features llvm-ir-scan` — since
+  it needs a real LLVM installation at build time, unlike every other binary
+  here. See [`src/AC_FINDER.md`](src/AC_FINDER.md#scanning-real-llvm-ir).
 
 ## Usage
 
@@ -249,13 +257,17 @@ per-entry below). The main `afg` tool (MUMP/STPA) does not read any of them.
 - `ac_functions.json`: access-control (authn/authz) call signatures —
   actix-web-httpauth, jsonwebtoken, casbin-rs, oso, biscuit-auth, etc.
   Consumed by [`find_ac_points`](src/AC_FINDER.md), which scans a RUPTA MIR
-  dump, and by `find_ac_points_src`, which scans Rust source directly (no
-  MIR/RUPTA step needed) for the same call sites.
+  dump; by `find_ac_points_src`, which scans Rust source directly (no
+  MIR/RUPTA step needed) for the same call sites; and by
+  `find_ac_points_llvm` (opt-in, `--features llvm-ir-scan`), which scans a
+  real LLVM IR module, matching demangled call targets against the same
+  catalogue.
 - `ac_functions_js.json`: the JS/TS equivalent, consumed by
   [`find_ac_points_js`](src/AC_FINDER_JS.md), which scans JS/TS source text
   directly for access-control middleware, guards, and raw HTTP authz calls.
-  `find_ac_points_all` runs all three (`find_ac_points`, `find_ac_points_src`,
-  `find_ac_points_js`) in one pass and merges the output.
+  `find_ac_points_all` runs all of `find_ac_points`, `find_ac_points_src`,
+  `find_ac_points_js`, and (with `--features llvm-ir-scan`)
+  `find_ac_points_llvm` in one pass and merges the output.
 
 ## License
 

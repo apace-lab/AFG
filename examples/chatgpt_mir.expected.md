@@ -9,7 +9,7 @@ Run:
 ## Terminal output
 
 ```
-[find_llm_calls] loaded 28 signatures from datasets/llm_api_functions.json
+[find_llm_calls] loaded 31 signatures from datasets/llm_api_functions.json
 No LLM API calls found in examples/chatgpt_mir.txt
 [find_llm_calls] JSON written to llm_api_matches.json
 ```
@@ -20,7 +20,7 @@ No LLM API calls found in examples/chatgpt_mir.txt
 {
   "matches": [],
   "mir_file": "examples/chatgpt_mir.txt",
-  "signatures_loaded": 28,
+  "signatures_loaded": 31,
   "total_matches": 0
 }
 ```

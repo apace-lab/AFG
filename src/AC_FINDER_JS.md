@@ -152,9 +152,10 @@ zero-match result as proof a route is unguarded.
 
 Both tools write structurally similar JSON (`library`, `category`, a call
 identifier, `match_strategy`, a `callsite`, `raw_line`, optional `ac_hint`).
-`find_ac_points_all` runs the Rust MIR scan, then the Rust source scan, then
-the JS/TS source scan, and writes one merged report with `rust_matches` /
-`rust_src_matches` / `js_matches` / `total_matches`, exactly like
+`find_ac_points_all` runs the Rust MIR scan, the Rust source scan, the JS/TS
+source scan, and (with `--features llvm-ir-scan`) the real-LLVM-IR scan, and
+writes one merged report with `rust_matches` / `rust_src_matches` /
+`js_matches` / `llvm_matches` / `total_matches`, exactly like
 `find_llm_calls_all`:
 
 ```sh
@@ -162,11 +163,14 @@ the JS/TS source scan, and writes one merged report with `rust_matches` /
     --mir /tmp/my_program_mir.txt \
     --rs-src path/to/backend/src \
     --src path/to/frontend/src \
+    --llvm-ir path/to/module.ll \
     --out ac_matches_all.json
 ```
 
-Any of `--mir`, `--rs-src`, or `--src` may be omitted to skip that scan (at
-least one is required).
+Any of `--mir`, `--rs-src`, `--src`, or `--llvm-ir` may be omitted to skip
+that scan (at least one is required). `--llvm-ir` only works on a binary
+built with `--features llvm-ir-scan` — see
+[`AC_FINDER.md`](./AC_FINDER.md#scanning-real-llvm-ir).
 
 ## Troubleshooting
 

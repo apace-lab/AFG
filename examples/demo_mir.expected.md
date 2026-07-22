@@ -9,10 +9,11 @@ Run:
 ## Terminal output
 
 ```
-[find_llm_calls] loaded 28 signatures from datasets/llm_api_functions.json
+[find_llm_calls] loaded 31 signatures from datasets/llm_api_functions.json
 Found 2 LLM API call(s) in examples/demo_mir.txt:
 
   Found raw-http-reqwest API call (reqwest::RequestBuilder::send) at FuncId(11) (demo::call_openai_direct) / bb28 [line 1294]
+    provider hint: OpenAI-compatible endpoint (OpenAI or a compatible proxy: Ollama, LM Studio, OpenRouter, etc.)
   Found async-openai API call (async_openai::chat::Chat::create) at FuncId(78) (demo::call_chatgpt_api) / bb0 [line 5874]
 [find_llm_calls] JSON written to llm_api_matches.json
 ```
@@ -32,6 +33,7 @@ Found 2 LLM API call(s) in examples/demo_mir.txt:
       "fn_name": "reqwest::RequestBuilder::send",
       "library": "raw-http-reqwest",
       "match_strategy": "short-name",
+      "provider_hint": "OpenAI-compatible endpoint (OpenAI or a compatible proxy: Ollama, LM Studio, OpenRouter, etc.)",
       "raw_line": "_41 = reqwest::blocking::RequestBuilder::send(const reqwest::blocking::RequestBuilder) -> [return: bb29, unwind: bb40];"
     },
     {
@@ -48,7 +50,7 @@ Found 2 LLM API call(s) in examples/demo_mir.txt:
     }
   ],
   "mir_file": "examples/demo_mir.txt",
-  "signatures_loaded": 28,
+  "signatures_loaded": 31,
   "total_matches": 2
 }
 ```

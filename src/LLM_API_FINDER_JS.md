@@ -60,17 +60,17 @@ Produces `find_llm_calls_js` in `target/release/` alongside `afg` and
 ## Quick example
 
 ```sh
-./target/release/find_llm_calls_js --src examples/demo_js
+./target/release/find_llm_calls_js --src examples/src/chat.ts
 ```
 
 Output:
 
 ```
-Found 3 LLM API call(s) in examples/demo_js:
+Found 3 LLM API call(s) in examples/src/chat.ts:
 
-  Found openai call (chat.completions.create, chat completion) at examples/demo_js/src/chat.ts:6 [call+import]
-  Found groq-sdk call (chat.completions.create, chat completion (OpenAI-compatible shape)) at examples/demo_js/src/chat.ts:6 [call-only]
-  Found raw-http-fetch call (fetch, raw HTTP call) at examples/demo_js/src/chat.ts:15 [http+path-hint]
+  Found groq-sdk call (chat.completions.create, chat completion (OpenAI-compatible shape)) at examples/src/chat.ts:6 [call-only]
+  Found openai call (chat.completions.create, chat completion) at examples/src/chat.ts:6 [call+import]
+  Found raw-http-fetch call (fetch, raw HTTP call) at examples/src/chat.ts:15 [http+path-hint]
     provider hint: Anthropic (Claude Messages API)
 ```
 
