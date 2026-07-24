@@ -39,7 +39,9 @@ pub struct JsAcMatch {
     pub pattern: String,
     pub kind: String,
     pub category: String,
-    /// "call+import" | "call-only" | "http+path-hint" | "http-call-only"
+    /// "call+import" | "call-only" | "http+path-hint" | "http-call-only" |
+    /// "reference+import" | "reference" | "reference+alias+import" |
+    /// "reference+alias"
     pub match_strategy: String,
     pub callsite: JsAcCallSite,
     pub raw_line: String,
@@ -277,6 +279,114 @@ fn split_top_level_commas(s: &str) -> Vec<(usize, usize)> {
     segments
 }
 
+// ── Single-hop alias resolution ─────────────────────────────────────────────
+//
+// A route often binds a guard to a local name first, then passes the name by
+// reference: `const guard = passport.authenticate("jwt"); router.get("/x",
+// guard, handler);`. Nothing at the route call site looks like a cataloged
+// pattern -- `guard` is just an identifier -- so the bare-reference detection
+// below (which only recognizes the pattern's own name) misses it. This pass
+// closes that specific, common case: it looks for `const/let/var IDENT =
+// <call-shape>` declarations anywhere in the file and records IDENT -> the
+// signature(s) its RHS matched, so the bare-reference scan can resolve
+// through one level of aliasing.
+//
+// This is intentionally a single hop, file-scoped lookup, not real data-flow
+// analysis: `const a = guard; const b = a;` won't resolve, reassignment
+// isn't tracked, and an alias declared in one file can't be resolved from an
+// import of it in another file. See "Known blind spots" in AC_FINDER_JS.md.
+
+static RE_ALIAS_DECL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*").unwrap()
+});
+
+/// Upper bound on how many characters of an alias assignment's RHS to scan
+/// looking for the statement-ending top-level `;`. Same rationale as
+/// `MAX_ROUTE_ARG_SCAN`: bounds cost and turns a missing semicolon (or a huge
+/// minified file) into a truncated-but-safe scan rather than a hang.
+const MAX_ALIAS_RHS_SCAN: usize = 4000;
+
+/// Find the byte offset of the first top-level (depth-0 across
+/// `()`/`[]`/`{}`, string-aware) `;` at or after `start` -- the end of the
+/// statement that began at `start`. Falls back to the scan bound if no
+/// semicolon is found there (e.g. the statement runs past
+/// `MAX_ALIAS_RHS_SCAN`), which just makes the RHS text used for matching a
+/// truncated best-effort rather than a hard failure.
+fn find_statement_end(s: &str, start: usize) -> usize {
+    let chars: Vec<char> = s[start..].chars().collect();
+    let mut depth = 0i32;
+    let mut in_string: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() && i < MAX_ALIAS_RHS_SCAN {
+        let c = chars[i];
+        if let Some(q) = in_string {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => {
+                in_string = Some(c);
+                i += 1;
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                i += 1;
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                i += 1;
+            }
+            ';' if depth <= 0 => {
+                let byte_off: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
+                return start + byte_off;
+            }
+            _ => i += 1,
+        }
+    }
+    let byte_off: usize = chars[..i].iter().map(|c| c.len_utf8()).sum();
+    start + byte_off
+}
+
+/// Scan `content` for `const/let/var IDENT = <expr>;` declarations whose RHS
+/// matches one of `matchers`' call-shape patterns, respecting the same
+/// import-confirmation gate ordinary call matches use (a `require_import`
+/// signature that isn't confirmed by an import never gets recorded here
+/// either). Returns IDENT -> one `(signature, was-import-confirmed)` entry
+/// per distinct signature it matched -- more than one only in the same rare
+/// cross-library ambiguity case the call-shape matcher already tolerates.
+fn build_alias_map<'a>(
+    content: &str,
+    matchers: &[CallMatcher<'a>],
+    imports: &HashSet<String>,
+) -> HashMap<String, Vec<(&'a JsAcSignature, bool)>> {
+    let mut map: HashMap<String, Vec<(&'a JsAcSignature, bool)>> = HashMap::new();
+    for caps in RE_ALIAS_DECL.captures_iter(content) {
+        let ident = caps[1].to_string();
+        let rhs_start = caps.get(0).unwrap().end();
+        let rhs_end = find_statement_end(content, rhs_start);
+        let rhs = &content[rhs_start..rhs_end];
+
+        for m in matchers {
+            if !m.pattern.is_match(rhs) {
+                continue;
+            }
+            let confirmed = import_satisfies(imports, &m.sig.packages);
+            if m.sig.require_import && !confirmed {
+                continue;
+            }
+            map.entry(ident.clone()).or_default().push((m.sig, confirmed));
+        }
+    }
+    map
+}
+
 /// Extract candidate bare-reference arguments from a route call's argument
 /// text: each top-level comma-separated argument, trimmed, with one level of
 /// `[...]` array-literal unwrapping (covers the common `[auth, isAdmin]`
@@ -316,6 +426,31 @@ fn line_of_byte_offset(content: &str, offset: usize) -> usize {
     content.as_bytes()[..offset].iter().filter(|&&b| b == b'\n').count() + 1
 }
 
+/// Whether the call-shape match starting at byte offset `start` within
+/// `line` is actually the name in a `function requireRole(...)`-style
+/// declaration rather than a call — e.g. a codebase's own in-house
+/// `requireRole()` guard shares its name with a `generic-authz-checks`
+/// catalogue pattern, and nothing but what precedes the `(` distinguishes a
+/// declaration from a call. Mirrors `is_fn_declaration` in
+/// `ac_finder_rs_src.rs`, adapted to JS's `function`/`function*` keyword
+/// instead of Rust's `fn`. Class/object method-shorthand declarations
+/// (`requireRole(role) { ... }`) are textually indistinguishable from a call
+/// without full parsing and remain a known blind spot — this only covers
+/// the unambiguous `function`-keyword form.
+fn is_fn_declaration(line: &str, start: usize) -> bool {
+    let mut trimmed = line[..start].trim_end();
+    if let Some(stripped) = trimmed.strip_suffix('*') {
+        trimmed = stripped.trim_end();
+    }
+    let Some(prefix) = trimmed.strip_suffix("function") else {
+        return false;
+    };
+    match prefix.chars().next_back() {
+        Some(c) => !c.is_alphanumeric() && c != '_' && c != '$',
+        None => true,
+    }
+}
+
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 struct CallMatcher<'a> {
@@ -352,6 +487,7 @@ pub fn scan_ac_js_source(
 ) -> Vec<JsAcMatch> {
     let imports = collect_imports(content);
     let matchers = make_call_matchers(sigs);
+    let alias_map = build_alias_map(content, &matchers, &imports);
 
     let lines: Vec<&str> = content.lines().collect();
 
@@ -396,6 +532,9 @@ pub fn scan_ac_js_source(
             });
             if shadowed {
                 continue;
+            }
+            if is_fn_declaration(line, *start) {
+                continue; // e.g. `function requireRole(...)` shadowing a call to the same-named pattern
             }
             let confirmed = import_satisfies(&imports, &m.sig.packages);
             if m.sig.require_import && !confirmed {
@@ -453,11 +592,13 @@ pub fn scan_ac_js_source(
         let args_text = &content[open_paren..close_paren];
 
         for (arg, rel_offset) in collect_reference_candidates(args_text) {
+            let mut matched_directly = false;
             for sig in sigs {
                 let is_reference = arg == sig.pattern || arg.ends_with(&format!(".{}", sig.pattern));
                 if !is_reference {
                     continue;
                 }
+                matched_directly = true;
                 let confirmed = import_satisfies(&imports, &sig.packages);
                 if sig.require_import && !confirmed {
                     continue;
@@ -475,6 +616,33 @@ pub fn scan_ac_js_source(
                     raw_line,
                     ac_hint: None,
                 });
+            }
+
+            // `arg` didn't textually match a cataloged pattern name itself --
+            // check whether it's a local alias for one (single-hop only; see
+            // "Single-hop alias resolution" above).
+            if !matched_directly {
+                if let Some(hits) = alias_map.get(&arg) {
+                    let abs_offset = open_paren + rel_offset;
+                    let lineno = line_of_byte_offset(content, abs_offset);
+                    let raw_line = lines.get(lineno - 1).map(|l| l.trim().to_string()).unwrap_or_default();
+                    for (sig, confirmed) in hits {
+                        matches.push(JsAcMatch {
+                            library: sig.library.clone(),
+                            pattern: sig.pattern.clone(),
+                            kind: format!(
+                                "{} (middleware passed by reference via local alias `{arg}`, not invoked)",
+                                sig.kind
+                            ),
+                            category: sig.category.clone(),
+                            match_strategy: if *confirmed { "reference+alias+import" } else { "reference+alias" }
+                                .to_string(),
+                            callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                            raw_line: raw_line.clone(),
+                            ac_hint: None,
+                        });
+                    }
+                }
             }
         }
     }
@@ -646,6 +814,60 @@ const res = await fetch("/api/settings", { method: "GET" });
     }
 
     #[test]
+    fn fn_declaration_sharing_a_pattern_name_is_not_a_call() {
+        const SRC: &str = r#"
+function requireRole(role) {
+  return function (req, res, next) {
+    next();
+  };
+}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("guards.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.is_empty(),
+            "a bare `function requireRole(...)` declaration should not be reported as a call: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn fn_declaration_variants_are_not_calls() {
+        const SRC: &str = r#"
+export async function isAdmin(user) {}
+export default function* hasPermission(user) {}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("guards2.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.is_empty(),
+            "async/generator/export function declarations should not be reported as calls: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn calling_a_pattern_named_after_a_declared_function_is_still_reported() {
+        // The declaration itself must be filtered, but an actual call to it
+        // elsewhere (or to same-named code in another file) must still fire.
+        const SRC: &str = r#"
+function requireRole(role) {
+  return function (req, res, next) { next(); };
+}
+router.get("/x", requireRole("admin"), handler);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("guards3.ts", SRC, &sigs, &opts());
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.library == "generic-authz-checks" && m.pattern == "requireRole"),
+            "expected the real call site to still be reported: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
     fn no_false_positives_on_unrelated_code() {
         const SRC: &str = r#"
 import React from "react";
@@ -774,6 +996,105 @@ router.use(jwt);
                 .iter()
                 .any(|m| m.library == "generic-authz-checks" && m.pattern == "isAdmin" && m.match_strategy == "reference"),
             "expected isAdmin reference on adminRouter.post: {:#?}",
+            matches
+        );
+    }
+
+    // ── single-hop alias resolution ──────────────────────────────────────
+
+    #[test]
+    fn resolves_bare_reference_through_local_alias() {
+        const SRC: &str = r#"
+import passport from "passport";
+const guard = passport.authenticate("jwt", { session: false });
+router.get("/admin", guard, handler);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("routes.ts", SRC, &sigs, &opts());
+        let hit = matches
+            .iter()
+            .find(|m| m.library == "passport" && m.pattern == "passport.authenticate" && m.match_strategy.starts_with("reference+alias"))
+            .expect("expected an alias-resolved passport reference match");
+        assert_eq!(hit.match_strategy, "reference+alias+import");
+        assert_eq!(hit.callsite.line, 4);
+        // The direct call-shape match on the assignment line still fires too
+        // -- that's a real call site, independent of the alias reference.
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.library == "passport" && m.match_strategy == "call+import" && m.callsite.line == 3),
+            "expected the assignment itself to still be reported as a call: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn alias_resolution_respects_require_import_gate() {
+        // jsonwebtoken's bare "verify" pattern requires a confirming import;
+        // aliasing it shouldn't bypass that gate.
+        const SRC: &str = r#"
+const check = verify(token, secret);
+router.use(check);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("mw.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "jsonwebtoken"),
+            "unconfirmed 'verify' alias should not be reported: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn alias_resolution_handles_multiline_rhs() {
+        const SRC: &str = r#"
+import passport from "passport";
+const guard = passport.authenticate(
+  "jwt",
+  { session: false }
+);
+router.get("/admin", guard, handler);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("routes.ts", SRC, &sigs, &opts());
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.library == "passport" && m.match_strategy == "reference+alias+import"),
+            "expected alias resolution to see across a multi-line RHS: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn identifier_matching_a_pattern_name_is_not_double_reported_via_alias() {
+        // `requireAuth` textually matches the generic-authz-checks pattern
+        // directly -- the alias path must not also fire for it.
+        const SRC: &str = r#"
+router.get("/admin", requireAuth, handler);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("routes.ts", SRC, &sigs, &opts());
+        let hits: Vec<_> = matches.iter().filter(|m| m.pattern == "requireAuth").collect();
+        assert_eq!(hits.len(), 1, "expected exactly one requireAuth match: {:#?}", hits);
+        assert_eq!(hits[0].match_strategy, "reference");
+    }
+
+    #[test]
+    fn multi_hop_alias_is_not_resolved() {
+        // Known limitation: this is a single-hop lookup, so a second level of
+        // aliasing is intentionally left unresolved.
+        const SRC: &str = r#"
+import passport from "passport";
+const inner = passport.authenticate("jwt");
+const guard = inner;
+router.get("/admin", guard, handler);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("routes.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| !(m.match_strategy.starts_with("reference+alias") && m.callsite.line == 5)),
+            "second-hop alias should not resolve: {:#?}",
             matches
         );
     }

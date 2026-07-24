@@ -1,0 +1,225 @@
+// Demo target for find_ac_points -- exercises every AC library in
+// datasets/ac_functions.json, every category (authentication, authorization,
+// policy-enforcement, raw-http), and all 3 match strategies (direct,
+// angle-bracket, short-name) in one file.
+//
+// This is NOT a real RUPTA MIR dump -- it's hand-written text in RUPTA's
+// output shape (`[FuncId(N) - "path"]`, `bbN: { ... }` blocks, UFCS call
+// syntax) purely as scan input, the same role examples/src/ac_demo.rs plays
+// for find_ac_points_src. `scan_ac_mir` only looks for a handful of regex
+// shapes (function header, basic-block header, a call line, string
+// literals), so it doesn't need to be a real compiler artifact to be a
+// faithful test of the scanner.
+//
+// Also demonstrates a real behavior difference from find_ac_points_src/_js:
+// find_ac_points has no --all-http-calls suppression -- every
+// reqwest::RequestBuilder::send call is reported unconditionally, with
+// ac_hint present only when a known AC path turns up nearby (compare
+// introspect_token, which gets a hint, against ping_health, which doesn't
+// but is still reported).
+
+[FuncId(1) - "my_app::build_bearer_middleware"]
+fn build_bearer_middleware() -> () {
+    let _0: ();
+    let _1: fn(actix_web_httpauth::extractors::bearer::BearerAuth) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>>;
+    let _2: actix_web_httpauth::middleware::HttpAuthentication<actix_web_httpauth::extractors::bearer::BearerAuth, _>;
+
+    bb0: {
+        _2 = actix_web_httpauth::middleware::HttpAuthentication::bearer(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(2) - "my_app::require_admin"]
+fn require_admin() -> () {
+    let _0: ();
+    let _1: actix_web_grants::authorities::AuthDetails;
+    let _2: &str;
+    let _3: bool;
+
+    bb0: {
+        _3 = AuthDetails::has_authority(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(3) - "my_app::current_user_id"]
+fn current_user_id() -> () {
+    let _0: ();
+    let _1: actix_identity::Identity;
+    let _2: std::result::Result<alloc::string::String, actix_identity::error::GetIdentityError>;
+
+    bb0: {
+        _2 = actix_identity::Identity::id(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(4) - "my_app::login"]
+fn login() -> () {
+    let _0: ();
+    let _1: my_app::Backend;
+    let _2: my_app::Credentials;
+    let _3: std::result::Result<std::option::Option<my_app::User>, my_app::AuthError>;
+
+    bb0: {
+        _3 = axum_login::AuthnBackend::authenticate(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(5) - "my_app::build_validate_layer"]
+fn build_validate_layer() -> () {
+    let _0: ();
+    let _1: alloc::string::String;
+    let _2: tower_http::validate_request::ValidateRequestHeaderLayer<tower_http::validate_request::ValidateBearerToken>;
+
+    bb0: {
+        _2 = tower_http::validate_request::ValidateRequestHeaderLayer::bearer(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(6) - "my_app::verify_token"]
+fn verify_token() -> () {
+    let _0: ();
+    let _1: alloc::string::String;
+    let _2: jsonwebtoken::DecodingKey;
+    let _3: jsonwebtoken::Validation;
+    let _4: std::result::Result<jsonwebtoken::TokenData<my_app::Claims>, jsonwebtoken::errors::Error>;
+
+    bb0: {
+        _4 = jsonwebtoken::decode::<my_app::Claims>(move _1, move _2, move _3) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(7) - "my_app::check_permission"]
+fn check_permission() -> () {
+    let _0: ();
+    let _1: casbin::Enforcer;
+    let _2: (alloc::string::String, alloc::string::String, alloc::string::String);
+    let _3: std::result::Result<bool, casbin::error::Error>;
+
+    bb0: {
+        _3 = <casbin::CoreApi>::enforce(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(8) - "my_app::oso_allows"]
+fn oso_allows() -> () {
+    let _0: ();
+    let _1: oso::Oso;
+    let _2: my_app::Actor;
+    let _3: alloc::string::String;
+    let _4: my_app::Resource;
+    let _5: std::result::Result<bool, oso::OsoError>;
+
+    bb0: {
+        _5 = oso::Oso::is_allowed(move _1, move _2, move _3, move _4) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(9) - "my_app::authorize_biscuit"]
+fn authorize_biscuit() -> () {
+    let _0: ();
+    let _1: biscuit_auth::Authorizer;
+    let _2: std::result::Result<usize, biscuit_auth::error::Token>;
+
+    bb0: {
+        _2 = biscuit_auth::Authorizer::authorize(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(10) - "my_app::ldap_login"]
+fn ldap_login() -> () {
+    let _0: ();
+    let _1: ldap3::LdapConn;
+    let _2: &str;
+    let _3: &str;
+    let _4: std::result::Result<ldap3::LdapResult, ldap3::result::LdapError>;
+
+    bb0: {
+        _4 = ldap3::LdapConn::simple_bind(move _1, move _2, move _3) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(11) - "my_app::exchange_oauth_code"]
+fn exchange_oauth_code() -> () {
+    let _0: ();
+    let _1: oauth2::Client;
+    let _2: oauth2::AuthorizationCode;
+    let _3: std::result::Result<oauth2::StandardTokenResponse, oauth2::RequestTokenError>;
+
+    bb0: {
+        _3 = oauth2::Client::exchange_code(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(12) - "my_app::check_password"]
+fn check_password() -> () {
+    let _0: ();
+    let _1: &str;
+    let _2: &str;
+    let _3: std::result::Result<bool, bcrypt::BcryptError>;
+
+    bb0: {
+        _3 = bcrypt::verify(move _1, move _2) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(13) - "my_app::check_password_argon2"]
+fn check_password_argon2() -> () {
+    let _0: ();
+    let _1: argon2::Argon2;
+    let _2: &[u8];
+    let _3: argon2::PasswordHash;
+    let _4: std::result::Result<(), argon2::password_hash::Error>;
+
+    bb0: {
+        _4 = argon2::PasswordVerifier::verify_password(move _1, move _2, move _3) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(14) - "my_app::introspect_token"]
+fn introspect_token() -> () {
+    let _0: ();
+    let _1: alloc::string::String;
+    let _2: reqwest::Client;
+    let _3: reqwest::RequestBuilder;
+    let _4: std::result::Result<reqwest::Response, reqwest::Error>;
+
+    bb0: {
+        _1 = alloc::fmt::format(const "{}/introspect") -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _3 = reqwest::Client::post::<alloc::string::String>(move _2, move _1) -> [return: bb2, unwind continue];
+    }
+    bb2: {
+        _4 = reqwest::RequestBuilder::send(move _3) -> [return: bb3, unwind continue];
+    }
+    bb3: { return; }
+}
+
+[FuncId(15) - "my_app::ping_health"]
+fn ping_health() -> () {
+    let _0: ();
+    let _1: reqwest::Client;
+    let _2: reqwest::RequestBuilder;
+    let _3: std::result::Result<reqwest::Response, reqwest::Error>;
+
+    bb0: {
+        _2 = reqwest::Client::get::<&str>(move _1, const "/api/health") -> [return: bb1, unwind continue];
+    }
+    bb1: {
+        _3 = reqwest::RequestBuilder::send(move _2) -> [return: bb2, unwind continue];
+    }
+    bb2: { return; }
+}

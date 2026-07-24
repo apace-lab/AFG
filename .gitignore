@@ -2,3 +2,7 @@
 Cargo.lock.bak
 **/*.rs.bk
 .DS_Store
+
+# Scratch .rlib output from regenerating examples/ac_demo_llvm.ll -- see
+# src/AC_FINDER.md#regenerating-examplesac_demo_llvmll
+examples/src/ac_demo_llvm/.build/

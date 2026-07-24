@@ -1,5 +1,7 @@
 # AFG
 
+[![CI](https://github.com/apace-lab/AFG/actions/workflows/ci.yml/badge.svg)](https://github.com/apace-lab/AFG/actions/workflows/ci.yml)
+
 Access Flow Guard (AFG) is a framework for detecting cross-user data leaks in
 multi-user Rust programs, in particular LLM-powered applications that share
 caches, databases, or other global state across user sessions.
@@ -54,6 +56,48 @@ entry below:
   crate. Opt-in only — `cargo build --release --features llvm-ir-scan` — since
   it needs a real LLVM installation at build time, unlike every other binary
   here. See [`src/AC_FINDER.md`](src/AC_FINDER.md#scanning-real-llvm-ir).
+
+### Convenience wrapper: `scripts/ac_finder.sh`
+
+[`scripts/ac_finder.sh`](scripts/ac_finder.sh) is a single dispatcher over the
+five `find_ac_points*` binaries above, so you don't have to remember which
+binary name goes with which target — pick a mode and it runs `cargo run
+--release` for you:
+
+```sh
+scripts/ac_finder.sh mir    --mir examples/demo_mir.txt      # find_ac_points
+scripts/ac_finder.sh rs-src --src src/                        # find_ac_points_src
+scripts/ac_finder.sh js     --src frontend/src                # find_ac_points_js
+scripts/ac_finder.sh llvm   --ir examples/ac_demo_llvm.ll     # find_ac_points_llvm
+scripts/ac_finder.sh all    --mir dump.txt --rs-src src/ --src frontend/src  # find_ac_points_all
+```
+
+Everything after `<mode>` is forwarded verbatim to that binary's own `clap`
+CLI, so every flag documented above (`--out`, `--datasets`,
+`--all-http-calls`, `--include-node-modules`, `--include-target-dir`, ...)
+works unchanged, and `scripts/ac_finder.sh <mode> --help` prints that
+binary's real `--help`. `llvm` mode, and `all` whenever `--llvm-ir` is
+passed, automatically add `--features llvm-ir-scan` — still requires LLVM
+installed as described above. Run `scripts/ac_finder.sh` with no arguments
+for the full usage text.
+
+### Convenience wrapper: `scripts/llm_api_finder.sh`
+
+[`scripts/llm_api_finder.sh`](scripts/llm_api_finder.sh) is the same kind of
+dispatcher, over the three `find_llm_calls*` binaries:
+
+```sh
+scripts/llm_api_finder.sh mir --mir examples/demo_mir.txt              # find_llm_calls
+scripts/llm_api_finder.sh js  --src frontend/src                        # find_llm_calls_js
+scripts/llm_api_finder.sh all --mir examples/demo_mir.txt --src frontend/src  # find_llm_calls_all
+```
+
+Same rules as `ac_finder.sh`: everything after `<mode>` is forwarded verbatim
+to that binary's own `clap` CLI (`--out`, `--datasets`, `--all-http-calls`,
+`--include-node-modules`, ...), and `scripts/llm_api_finder.sh <mode> --help`
+prints that binary's real `--help`. No LLVM feature here — the LLM finder has
+no LLVM-IR scanner. Run `scripts/llm_api_finder.sh` with no arguments for the
+full usage text.
 
 ## Usage
 
@@ -268,6 +312,22 @@ per-entry below). The main `afg` tool (MUMP/STPA) does not read any of them.
   `find_ac_points_all` runs all of `find_ac_points`, `find_ac_points_src`,
   `find_ac_points_js`, and (with `--features llvm-ir-scan`)
   `find_ac_points_llvm` in one pass and merges the output.
+
+## Testing
+
+```sh
+cargo test --release                          # everything except find_ac_points_llvm
+cargo test --release --features llvm-ir-scan  # also exercises find_ac_points_llvm
+```
+
+[`tests/fixtures.rs`](tests/fixtures.rs) runs each `find_ac_points*` binary
+against the worked-example fixtures referenced throughout the docs above
+(`examples/ac_demo_mir.txt`, `examples/src/ac_demo.rs`,
+`examples/src/ac_demo_js.ts`, `examples/ac_demo_llvm.ll`) and asserts on the
+resulting JSON, so a change that breaks a documented example fails
+`cargo test` instead of silently drifting from what's written down.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs both commands
+above on every push and pull request against `main`.
 
 ## License
 

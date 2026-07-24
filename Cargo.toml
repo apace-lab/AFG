@@ -23,9 +23,10 @@ walkdir = "2"
 # Pulls in llvm-sys, which needs a matching real LLVM install (llvm-config on
 # PATH) at build time -- unlike every other dependency here. Kept optional
 # and off by default so `cargo build`/`cargo test` without --features keeps
-# working for anyone without LLVM installed. Pinned to LLVM 18; see
+# working for anyone without LLVM installed. Pinned to LLVM 19 -- the newest
+# version this crate (0.11.x) supports; see
 # src/AC_FINDER.md#scanning-real-llvm-ir for how to retarget another version.
-llvm-ir = { version = "0.11", features = ["llvm-18"], optional = true }
+llvm-ir = { version = "0.11", features = ["llvm-19"], optional = true }
 rustc-demangle = { version = "0.1", optional = true }
 
 [features]

@@ -80,6 +80,10 @@ Found 5 access-control call site(s) in path/to/src:
 
 A JSON report is written to `ac_matches_js.json` by default.
 
+For a worked example exercising every library, category, and match strategy
+in one file, see `examples/src/ac_demo_js.ts`. `tests/fixtures.rs` runs it
+and checks the JSON output on every `cargo test`.
+
 ## Usage
 
 ```sh
@@ -113,6 +117,12 @@ skip `.git` and (by default) `node_modules`.
   also imports the package it belongs to.
 - `reference` — same, but with no confirming import (or the pattern has no
   associated package, e.g. `generic-authz-checks`).
+- `reference+alias+import` — the argument wasn't itself a known pattern name,
+  but is a local `const`/`let`/`var` alias for one (`const guard =
+  passport.authenticate(...)`), and the file imports the package it belongs
+  to. See [Middleware passed by reference](#middleware-passed-by-reference).
+- `reference+alias` — same, but with no confirming import (or the aliased
+  pattern has no associated package).
 
 ## Middleware passed by reference
 
@@ -133,20 +143,44 @@ middleware-array unwrapping (`router.get("/x", [auth, isAdmin], handler)`).
 The higher-order factory form (`requireRole("admin")`) is still caught by the
 ordinary call-shape matcher, not this one, so it isn't double-reported.
 
-This closes the common case, but a real blind spot remains: an **aliased**
-reference —
+This closes the common case, and a common **aliased** variant is also
+resolved —
 
 ```js
 const guard = passport.authenticate("jwt");
 router.get("/admin", guard, handler);
 ```
 
-— can't be resolved without data-flow analysis. `guard` doesn't textually
-match any cataloged pattern, so this scanner (which only ever does text
-matching, never binds identifiers to their definitions) has no way to know it
-came from `passport.authenticate`. If a codebase leans on this style, expect
-under-counting — read the route table by hand as a supplement, don't treat a
-zero-match result as proof a route is unguarded.
+`guard` doesn't textually match any cataloged pattern on its own, but a
+separate single-hop alias pass scans the whole file for `const`/`let`/`var
+IDENT = <expr>;` declarations, checks whether `<expr>` matches a call-shape
+pattern (same import-confirmation gate as an ordinary call), and records
+`IDENT` against the signature it matched. The bare-reference pass above then
+resolves through that table when an argument isn't a direct pattern-name
+match, reporting it as `reference+alias`/`reference+alias+import` (see [Match
+strategies](#match-strategies)). `guard` in the example above is reported as
+a `passport` reference, resolved via the `guard` alias.
+
+This is still text matching, not real data-flow analysis, so it's
+deliberately narrow:
+
+- **Single hop only** — `const a = passport.authenticate(...); const b = a;`
+  does not resolve `b`; only the direct alias of the matched expression is
+  tracked.
+- **File-scoped, not block/function-scoped** — an alias declared anywhere in
+  the file is visible everywhere in that file, the same looseness the rest of
+  this scanner already has (see `callsite.function` in
+  [`find_ac_points_src`](./AC_FINDER.md#scanning-rust-source-directly) for the
+  Rust-side equivalent).
+- **No cross-file resolution** — an alias declared in one file can't be
+  resolved from an `import` of it in another file.
+- **No reassignment tracking** — the last matching declaration for a given
+  name wins if the same identifier is redeclared with `let`/`var`.
+
+If a codebase leans on patterns this doesn't cover (multi-hop aliasing,
+destructured re-exports, aliases built inside a function and passed out),
+expect some under-counting — read the route table by hand as a supplement,
+don't treat a zero-match result as proof a route is unguarded.
 
 ## Relationship to `find_ac_points`
 
@@ -171,6 +205,41 @@ Any of `--mir`, `--rs-src`, `--src`, or `--llvm-ir` may be omitted to skip
 that scan (at least one is required). `--llvm-ir` only works on a binary
 built with `--features llvm-ir-scan` — see
 [`AC_FINDER.md`](./AC_FINDER.md#scanning-real-llvm-ir).
+
+## Known blind spots
+
+**A codebase's own in-house guard sharing a catalogue pattern's name** — a
+generic pattern like `requireRole`/`hasPermission`/`isAdmin`
+(`generic-authz-checks`) is exactly the kind of name a project would pick for
+its *own* auth helper, and its declaration —
+
+```ts
+function requireRole(role: string) {
+  return function (req, res, next) { /* ... */ };
+}
+```
+
+— textually contains `requireRole(`, identical to a call. This is filtered:
+`is_fn_declaration` recognizes the `function`/`async function`/`function*`
+keyword immediately preceding the match (mirroring `is_fn_declaration` in
+`ac_finder_rs_src.rs` for Rust's `fn` keyword) and skips it. A real call to
+that same name elsewhere is still reported normally — see the
+`fn_declaration_sharing_a_pattern_name_is_not_a_call` and
+`calling_a_pattern_named_after_a_declared_function_is_still_reported` tests.
+
+This only covers the unambiguous `function`-keyword form. **Class/object
+method-shorthand declarations remain unfiltered** —
+
+```ts
+class Guard {
+  requireRole(role) { /* ... */ }   // declaration, not a call
+}
+```
+
+— is textually indistinguishable from a call (`requireRole(`) without full
+parsing, so it will still be reported. Same shape of caveat as the
+alias-resolution limits above: expect some over-counting from
+method-shorthand declarations named after a generic pattern.
 
 ## Troubleshooting
 

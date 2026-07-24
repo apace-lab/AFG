@@ -2,8 +2,9 @@
 //! crates (`jsonwebtoken`, `bcrypt`, `casbin`) plus one unrelated call that
 //! must NOT be reported. Compiled for real with `rustc --emit=llvm-ir`
 //! against the other three files in this directory to produce
-//! `examples/ac_demo_llvm.ll`; see `examples/ac_demo_llvm.expected.md` for
-//! the exact commands.
+//! `examples/ac_demo_llvm.ll`; see
+//! `src/AC_FINDER.md#regenerating-examplesac_demo_llvmll` for the exact
+//! commands.
 
 use casbin::CoreApi;
 

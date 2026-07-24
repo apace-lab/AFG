@@ -90,6 +90,13 @@ cargo run --bin find_ac_points -- --mir <MIR_DUMP> [--datasets <DIR>] [--out <FI
 | `--datasets` | no | `datasets/` | Folder containing `ac_functions.json` |
 | `--out` | no | `ac_matches.json` | Where to write the JSON report |
 
+For a worked example exercising every library, category, and match strategy
+(`direct`, `angle-bracket`, `short-name`) in one file, see
+`examples/ac_demo_mir.txt` — hand-written text in RUPTA's MIR-dump shape
+rather than a real RUPTA run, the same role `examples/src/ac_demo.rs` plays
+for `find_ac_points_src`. `tests/fixtures.rs` runs it and checks the JSON
+output on every `cargo test`.
+
 ## Generating a MIR dump
 
 Same procedure as `find_llm_calls` — see [LLM API Finder: Generating a MIR
@@ -114,8 +121,8 @@ produce false positives on unrelated types — and a `fn login(...)`
 declaration is never mistaken for a call to that name either.
 
 For a worked example exercising every library, category, and match strategy
-in one file, see `examples/src/ac_demo.rs` and
-[`examples/ac_demo_src.expected.md`](../examples/ac_demo_src.expected.md).
+in one file, see `examples/src/ac_demo.rs`. `tests/fixtures.rs` runs it and
+checks the JSON output on every `cargo test`.
 
 ```sh
 ./target/release/find_ac_points_src --src <FILE_OR_DIR> [--datasets <DIR>] [--out <FILE>]
@@ -190,9 +197,9 @@ default dependency — without it, `cargo build`/`cargo test` behave exactly
 as before for everyone who doesn't need this scanner.
 
 ```sh
-# needs LLVM 18 installed (llvm-config on PATH) -- this crate is pinned to
-# the "llvm-18" feature of llvm-ir; see "Retargeting a different LLVM
-# version" below if you're on a different one
+# needs LLVM 19 installed (llvm-config on PATH) -- this crate is pinned to
+# the "llvm-19" feature of llvm-ir (the newest it supports); see
+# "Retargeting a different LLVM version" below if you're on a different one
 cargo build --release --features llvm-ir-scan
 ```
 
@@ -202,42 +209,49 @@ alongside the MIR/Rust-source/JS-TS scans). Building without the feature
 still produces `find_ac_points_all`, but passing `--llvm-ir` to it is then a
 runtime error telling you to rebuild with `--features llvm-ir-scan`.
 
-### Getting a working LLVM 18 toolchain
+### Getting a working LLVM 19 toolchain
 
-`llvm-sys` needs `llvm-config` on `PATH` (or `LLVM_SYS_181_PREFIX` pointing
+`llvm-sys` needs `llvm-config` on `PATH` (or `LLVM_SYS_191_PREFIX` pointing
 at a prefix containing it) at build time — not just the LLVM tools/DLLs, a
 full development install with `llvm-config` and the per-component static
 libraries.
 
-- **Linux**: your distro's `llvm-18-dev` package (Debian/Ubuntu) or
+- **Linux**: your distro's `llvm-19-dev` package (Debian/Ubuntu) or
   equivalent is normally sufficient. On Debian/Ubuntu you also need
-  `libpolly-18-dev` and `libzstd-dev` for a full static link (`llvm-18-dev`
+  `libpolly-19-dev` and `libzstd-dev` for a full static link (`llvm-19-dev`
   alone builds but fails at link time with "could not find native static
   library `Polly`" / "unable to find library -lzstd" otherwise).
 - **Windows**: the official LLVM installer (`winget install LLVM.LLVM`, or
   the `.exe` from [releases.llvm.org](https://releases.llvm.org/)) does
   **not** ship `llvm-config.exe` or per-component static libs — only DLL
   import libraries and no `include/` headers — so `llvm-sys` cannot build
-  against it regardless of `LLVM_SYS_181_PREFIX`. Either build LLVM 18 from
-  source (CMake + Ninja + MSVC), or use WSL and a Linux `llvm-18-dev`
+  against it regardless of `LLVM_SYS_191_PREFIX`. Either build LLVM 19 from
+  source (CMake + Ninja + MSVC), or use WSL and a Linux `llvm-19-dev`
   package as above; there's no shortcut through the native Windows
   installer today.
-- **macOS**: Homebrew's `llvm@18` includes `llvm-config`; you'll likely need
-  `LLVM_SYS_181_PREFIX=$(brew --prefix llvm@18)` since it's keg-only.
+- **macOS**: Homebrew's `llvm@19` includes `llvm-config` and was
+  auto-discovered here with no env var needed; if it isn't found, set
+  `LLVM_SYS_191_PREFIX=$(brew --prefix llvm@19)` since it's keg-only.
 
 ### Retargeting a different LLVM version
 
-This is pinned to LLVM 18 in `Cargo.toml`:
+This is pinned to LLVM 19 in `Cargo.toml` — the newest version `llvm-ir`
+0.11.x supports:
 
 ```toml
-llvm-ir = { version = "0.11", features = ["llvm-18"], optional = true }
+llvm-ir = { version = "0.11", features = ["llvm-19"], optional = true }
 ```
 
-If your toolchain is on a different LLVM major version, change `"llvm-18"`
-to the matching feature (`llvm-ir` 0.11 supports `llvm-9` through `llvm-19`
-at the time of writing — check
+If your toolchain is on a different (older) LLVM major version, change
+`"llvm-19"` to the matching feature (`llvm-ir` 0.11 supports `llvm-9`
+through `llvm-19` at the time of writing — check
 [`llvm-ir`'s `Cargo.toml`](https://github.com/cdisselkoen/llvm-ir/blob/master/Cargo.toml)
-for the current range). Only one `llvm-N` feature can be active at a time.
+for the current range, in case a newer `llvm-ir` release has extended it).
+Only one `llvm-N` feature can be active at a time. Note this is a ceiling,
+not a moving target: a *current* rustc already bundles a newer LLVM than
+19 (see "Regenerating `examples/ac_demo_llvm.ll`" below), so generating
+fresh IR for this scanner to read still means pinning an older rustc
+regardless of which supported feature you pick.
 
 ### `find_ac_points_llvm` usage
 
@@ -256,10 +270,11 @@ cargo run --release --features llvm-ir-scan --bin find_ac_points_llvm -- --ir <M
 
 For a worked example — real `rustc --emit=llvm-ir` output (not hand-written),
 exercising the `direct` and `angle-bracket` match strategies against a real
-trait-impl call site — see `examples/ac_demo_llvm.ll`, its source in
-`examples/src/ac_demo_llvm/`, and
-[`examples/ac_demo_llvm.expected.md`](../examples/ac_demo_llvm.expected.md)
-(which also documents the exact `rustc` commands used to regenerate it).
+trait-impl call site — see `examples/ac_demo_llvm.ll`, generated from the
+source in `examples/src/ac_demo_llvm/` (see [Regenerating
+`examples/ac_demo_llvm.ll`](#regenerating-examplesac_demo_llvmll) below for
+how). `tests/fixtures.rs` runs it and checks the JSON output whenever
+`cargo test` is run with `--features llvm-ir-scan`.
 
 ### Generating an LLVM IR module
 
@@ -282,6 +297,59 @@ Add `-g` (rustc) or `-g` (clang) to carry source file/line debug info through
 into the IR — `find_ac_points_llvm` reports `callsite.file`/`callsite.line`
 when present, and falls back to basic-block name + instruction index when
 not.
+
+### Regenerating `examples/ac_demo_llvm.ll`
+
+`examples/ac_demo_llvm.ll` is real `rustc --emit=llvm-ir` output, generated
+from the four small Rust source files in `examples/src/ac_demo_llvm/`:
+`jsonwebtoken.rs`/`bcrypt.rs`/`casbin.rs` (minimal stand-ins for those
+crates' public surface, each compiled as its own crate so real Rust mangling
+gives call sites the same paths the catalogue expects) and `my_app.rs` (the
+"application" crate, calling into all three plus one unrelated `format!`
+call that must not be reported).
+
+`rustc`'s bundled LLVM version has to match (or at least be understood by)
+the `llvm-ir` crate's pinned parser version. A *current* `rustc` bundles a
+much newer LLVM than this repo's `llvm-19` pin — rustc jumped to LLVM 20+
+around the 1.85+ range — whose IR text uses newer syntax that doesn't
+parse under LLVM 19's grammar, so regenerating this fixture needs an older
+`rustc` whose bundled LLVM actually matches. rustc 1.82.0–1.84.x all bundle
+LLVM 19.1.x:
+
+```sh
+rustup toolchain install 1.82.0   # bundles LLVM 19.1.1 -- matches our pin
+cd examples/src/ac_demo_llvm
+mkdir -p .build
+rustc +1.82.0 --edition 2021 --crate-type lib --crate-name jsonwebtoken -o .build/libjsonwebtoken.rlib jsonwebtoken.rs
+rustc +1.82.0 --edition 2021 --crate-type lib --crate-name bcrypt       -o .build/libbcrypt.rlib bcrypt.rs
+rustc +1.82.0 --edition 2021 --crate-type lib --crate-name casbin       -o .build/libcasbin.rlib casbin.rs
+rustc +1.82.0 --edition 2021 --crate-type lib --crate-name ac_demo_llvm \
+  --extern jsonwebtoken=.build/libjsonwebtoken.rlib \
+  --extern bcrypt=.build/libbcrypt.rlib \
+  --extern casbin=.build/libcasbin.rlib \
+  --emit=llvm-ir -o ../../ac_demo_llvm.ll \
+  my_app.rs
+```
+
+If your default `rustc` already bundles LLVM 19 (check `rustc -vV`), you can
+drop the `+1.82.0` toolchain overrides. Then scan it:
+
+```sh
+cargo build --release --features llvm-ir-scan
+./target/release/find_ac_points_llvm --ir examples/ac_demo_llvm.ll
+```
+
+Generating IR from a *real* crate with actual dependencies (rather than
+these dependency-free stand-ins) means going through Cargo, and hits a
+second, independent problem on top of the LLVM-version mismatch above:
+this repo's `Cargo.lock` resolves some dependency versions (e.g.
+`clap_lex`) that need Cargo's `edition2024` support, which a rustc old
+enough to bundle LLVM 19 doesn't have. Building such a target for
+`--emit=llvm-ir` therefore needs both the pinned old rustc *and* those
+dependencies temporarily downgraded to pre-`edition2024` versions (e.g.
+`cargo update -p clap --precise 4.5.20` and let it cascade) — ideally done
+in a scratch clone or worktree so it never touches this repo's own
+`Cargo.lock`.
 
 ### Match strategies and JSON shape
 

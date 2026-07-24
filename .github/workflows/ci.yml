@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build + test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cargo test --release
+
+  test-llvm:
+    name: build + test (llvm-ir-scan feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: llvm-ir-scan
+      # LLVM 19 dev packages -- matches the versioned llvm-ir crate feature
+      # this repo is pinned to (the newest llvm-ir 0.11.x supports). See
+      # src/AC_FINDER.md#getting-a-working-llvm-19-toolchain for why the
+      # extra libpolly/libzstd packages are needed for a full static link
+      # on Debian/Ubuntu.
+      - name: Install LLVM 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-19-dev libpolly-19-dev libzstd-dev
+      - run: cargo build --release --features llvm-ir-scan
+      - run: cargo test --release --features llvm-ir-scan
