@@ -9,7 +9,7 @@
 use crate::ac_hints::find_ac_hint;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -23,6 +23,19 @@ pub struct AcSignature {
     pub category: String,
     pub return_type: String,
     pub parameter_type: Vec<String>,
+    /// How this signature's shape was established -- "general-knowledge" |
+    /// "docs.rs" | "manual" | "ambient" | "unspecified" (missing from the
+    /// catalog entry). Surfaced on every match (see `AcMatch::verified_via`
+    /// and its siblings) so a consumer can triage/filter speculative matches
+    /// from verified ones without cross-referencing the catalog by hand.
+    pub verified_via: String,
+    /// "call" (default -- a function/method invocation) | "attribute" (a
+    /// `#[pattern(...)]` proc-macro attribute -- see
+    /// `ac_finder_rs_src::scan_attribute_guards`). Attribute-kind signatures
+    /// are skipped by the MIR/LLVM-IR scanners entirely: attribute macros
+    /// expand away before codegen, so there's no realistic callee text for
+    /// either to match.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +61,10 @@ pub struct AcMatch {
     /// the mechanism.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ac_hint: Option<String>,
+    /// Copied from the matching `AcSignature::verified_via` -- how
+    /// trustworthy this signature's shape is, for triaging matches without
+    /// cross-referencing the catalog by hand.
+    pub verified_via: String,
 }
 
 // ── Loader ────────────────────────────────────────────────────────────────────
@@ -93,12 +110,20 @@ pub fn load_ac_signatures(datasets_path: &Path) -> Result<Vec<AcSignature>, Box<
                         .collect()
                 })
                 .unwrap_or_default();
+            let verified_via = entry
+                .get("verified_via")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unspecified")
+                .to_string();
+            let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("call").to_string();
             sigs.push(AcSignature {
                 library: lib_name.clone(),
                 fn_name,
                 category,
                 return_type,
                 parameter_type,
+                verified_via,
+                kind,
             });
         }
     }
@@ -171,6 +196,25 @@ static RE_CALL: LazyLock<Regex> =
 // format-string argument to `alloc::fmt::format`.
 static RE_STRING_LIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""((?:[^"\\]|\\.)*)""#).unwrap());
 
+// ── Crate-reference gating (short-name strategy only) ───────────────────────
+//
+// Unlike `ac_finder_rs_src`, this scanner has no import statements to check --
+// MIR has no `use`. But the "short-name" strategy (last two path segments,
+// unanchored -- e.g. `Enforcer::enforce(`) is just as capable of colliding
+// with an unrelated local type/method of the same name here as it is in
+// source text, and had no mitigation at all before this: any MIR callee text
+// containing that shape matched regardless of whether the signature's crate
+// was actually used anywhere in the dump. This closes that gap the same way
+// `ac_finder_rs_src::crate_is_referenced` does -- requiring the crate root to
+// appear as a `root::` path segment somewhere else in the dump -- just
+// computed once as a `HashSet` up front (rather than re-scanning the whole
+// file's text per candidate) since a MIR dump can be very large.
+static RE_PATH_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)::").unwrap());
+
+fn collect_referenced_roots(content: &str) -> HashSet<String> {
+    RE_PATH_ROOT.captures_iter(content).map(|c| c[1].to_string()).collect()
+}
+
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 /// Remove `::<...>` turbofish segments from a callee path, including nested
@@ -204,8 +248,34 @@ fn strip_turbofish(s: &str) -> String {
 /// Scan `mir_content` for calls matching any of `sigs`.
 /// Returns one `AcMatch` per unique (callsite, signature) pair found.
 pub fn scan_ac_mir(mir_content: &str, sigs: &[AcSignature]) -> Vec<AcMatch> {
-    let sig_matchers: Vec<(&AcSignature, Vec<Matcher>)> =
-        sigs.iter().map(|sig| (sig, make_matchers(sig))).collect();
+    // "axum-extractors", "actix-web-extractors", "outbound-credential-header",
+    // and "inbound-credential-header" are find_ac_points_src-only (see
+    // src/AC_FINDER.md's Supported libraries table): they need source-level
+    // inspection this scanner's call-shape matching can't safely replicate.
+    // The two extractor libraries' trait-impl patterns don't have a
+    // realistic MIR call shape at all (harmless if left in), but
+    // `reqwest::RequestBuilder::header`/`HeaderMap::get` genuinely do --
+    // every `.header("Content-Type", ...)` / `some_map.get("id")` call would
+    // match just as readily as an `.header("Authorization", ...)` /
+    // `headers.get("Authorization")` one, since MIR call-shape matching has
+    // no way to inspect which header name was actually passed, or (for
+    // `.get`) that the receiver was a `HeaderMap` at all rather than any
+    // other type with a `get` method. Excluding the whole library keeps the
+    // "find_ac_points_src only" claim in the docs actually true rather than
+    // just usually-harmless-by-luck.
+    let sig_matchers: Vec<(&AcSignature, Vec<Matcher>)> = sigs
+        .iter()
+        .filter(|sig| {
+            sig.library != "axum-extractors"
+                && sig.library != "actix-web-extractors"
+                && sig.library != "outbound-credential-header"
+                && sig.library != "inbound-credential-header"
+                && sig.kind != "attribute" // proc-macro attributes expand away before MIR -- no realistic callee text here
+        })
+        .map(|sig| (sig, make_matchers(sig)))
+        .collect();
+
+    let referenced_roots = collect_referenced_roots(mir_content);
 
     let mut matches = Vec::new();
     let mut current_func_id = String::from("unknown");
@@ -241,6 +311,12 @@ pub fn scan_ac_mir(mir_content: &str, sigs: &[AcSignature]) -> Vec<AcMatch> {
         'sig: for (sig, matchers) in &sig_matchers {
             for matcher in matchers {
                 if matcher.pattern.is_match(&callee_raw) {
+                    if matcher.strategy == "short-name" {
+                        let crate_root = sig.fn_name.split("::").next().unwrap_or("");
+                        if !referenced_roots.contains(crate_root) {
+                            continue; // no corroborating reference to this crate anywhere in the dump
+                        }
+                    }
                     let ac_hint = if sig.library == "raw-http-authz" {
                         find_ac_hint(&func_string_literals)
                     } else {
@@ -259,6 +335,7 @@ pub fn scan_ac_mir(mir_content: &str, sigs: &[AcSignature]) -> Vec<AcMatch> {
                         },
                         raw_line: line.trim().to_string(),
                         ac_hint,
+                        verified_via: sig.verified_via.clone(),
                     });
                     break 'sig;
                 }
@@ -286,6 +363,8 @@ mod tests {
             category: category.to_string(),
             return_type: String::new(),
             parameter_type: vec![],
+            verified_via: "general-knowledge".to_string(),
+            kind: "call".to_string(),
         }
     }
 
@@ -328,6 +407,7 @@ fn verify_token() -> () {
         let matches = scan_ac_mir(MIR, &sigs);
         assert_eq!(matches.len(), 1, "missed jsonwebtoken::decode: {:#?}", matches);
         assert_eq!(matches[0].category, "authentication");
+        assert_eq!(matches[0].verified_via, "general-knowledge");
     }
 
     #[test]
@@ -395,6 +475,92 @@ fn main() -> () {
         let sigs = load_ac_signatures(datasets_path()).expect("load_ac_signatures");
         let matches = scan_ac_mir(MIR, &sigs);
         assert!(matches.is_empty(), "false positives detected: {:#?}", matches);
+    }
+
+    #[test]
+    fn outbound_credential_header_is_not_matched_in_mir() {
+        // Regression guard: `reqwest::RequestBuilder::header` is
+        // find_ac_points_src-only (its match strategy there inspects the
+        // actual header-name argument via AUTH_HEADER_NAMES). MIR call-shape
+        // matching alone can't distinguish `.header("Authorization", ...)`
+        // from `.header("Content-Type", ...)` -- both compile to the same
+        // callee shape -- so this scanner must not load that signature at
+        // all, or every plain header-setting call would be mislabeled
+        // "authentication".
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::ping"]
+fn ping() -> () {
+    let _0: ();
+    let _1: reqwest::RequestBuilder;
+    let _2: reqwest::RequestBuilder;
+
+    bb0: {
+        _2 = reqwest::RequestBuilder::header::<&str, &str>(move _1, const "Content-Type", const "application/json") -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = load_ac_signatures(datasets_path()).expect("load_ac_signatures");
+        let matches = scan_ac_mir(MIR, &sigs);
+        assert!(
+            matches.iter().all(|m| m.library != "outbound-credential-header"),
+            "Content-Type header call was mislabeled as a credential header: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn short_name_match_suppressed_without_crate_reference() {
+        // Regression test: "short-name" (last two path segments, unanchored
+        // -- "CoreApi::enforce" for casbin::CoreApi::enforce) must not fire
+        // when nothing else in the dump corroborates that the signature's
+        // crate is actually in play -- an unrelated local `CoreApi::enforce`
+        // sharing casbin's method name must not be misreported as a casbin
+        // call.
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::check_local_policy"]
+fn check_local_policy() -> () {
+    let _0: ();
+    let _1: LocalPolicy;
+    let _2: bool;
+
+    bb0: {
+        _2 = CoreApi::enforce(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("casbin-rs", "casbin::CoreApi::enforce", "policy-enforcement")];
+        let matches = scan_ac_mir(MIR, &sigs);
+        assert!(
+            matches.is_empty(),
+            "unrelated CoreApi::enforce should not match casbin without a crate reference: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn short_name_match_allowed_with_crate_reference() {
+        // Same shape as above, but this time the dump genuinely references
+        // `casbin::` elsewhere -- real corroborating evidence -- so the
+        // short-name match should still fire.
+        const MIR: &str = r#"
+[FuncId(1) - "my_app::check_access"]
+fn check_access() -> () {
+    let _0: ();
+    let _1: casbin::Enforcer;
+    let _2: bool;
+
+    bb0: {
+        _2 = CoreApi::enforce(move _1) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+"#;
+        let sigs = vec![sig("casbin-rs", "casbin::CoreApi::enforce", "policy-enforcement")];
+        let matches = scan_ac_mir(MIR, &sigs);
+        assert_eq!(matches.len(), 1, "expected the short-name match to fire: {:#?}", matches);
+        assert_eq!(matches[0].match_strategy, "short-name");
     }
 
     #[test]

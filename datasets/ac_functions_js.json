@@ -68,7 +68,8 @@
         "calls": [
             { "pattern": "getServerSession", "kind": "server-side session/authentication check", "category": "session" },
             { "pattern": "withAuth", "kind": "middleware auth wrapper", "category": "authentication" },
-            { "pattern": "auth", "kind": "Auth.js v5 session helper (generic name — gated by import)", "category": "session", "require_import": true }
+            { "pattern": "auth", "kind": "Auth.js v5 session helper (generic name — gated by import)", "category": "session", "require_import": true },
+            { "pattern": "NextAuth", "kind": "Auth.js v5 initialization (NextAuth({...}) config -- typically destructured into auth/signIn/signOut/handlers and re-exported from a local module for the rest of the app to import, so catching this central config call is the reliable anchor when every downstream call site imports the generic \"auth\" name from that local re-export instead of the next-auth package directly)", "category": "authentication", "require_import": true }
         ]
     },
 

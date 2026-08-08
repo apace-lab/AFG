@@ -22,7 +22,9 @@ use crate::ac_finder::AcSignature;
 use llvm_ir::{Constant, HasDebugLoc, Instruction, Module, Name, Operand};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
 // Same catalogue, same loader -- `ac_functions.json` entries are already
 // keyed on fully-qualified Rust paths, which is exactly what a demangled
@@ -69,6 +71,10 @@ pub struct AcLlvmMatch {
     /// `src/AC_FINDER.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ac_hint: Option<String>,
+    /// Copied from the matching `AcSignature::verified_via` -- how
+    /// trustworthy this signature's shape is, for triaging matches without
+    /// cross-referencing the catalog by hand.
+    pub verified_via: String,
 }
 
 // ── Module loading ───────────────────────────────────────────────────────────────
@@ -180,6 +186,40 @@ fn strip_generics(s: &str) -> String {
     result
 }
 
+// ── Crate-reference gating (short-name strategy only) ───────────────────────
+//
+// Same rationale and approach as `ac_finder::collect_referenced_roots`: the
+// "short-name" strategy (last two path segments, unanchored) had no
+// mitigation here either, and is if anything more exposed in LLVM IR, which
+// has no `use`/import syntax at all to check against -- every demangled
+// callee whose text happened to end in e.g. `Enforcer::enforce(` matched
+// unconditionally. This builds a `HashSet` of every path-segment root that
+// appears anywhere else in the module -- across every defined function's
+// demangled name and every external declaration's demangled name -- once per
+// scan, and requires a signature's crate root to be among them before a
+// short-name match is accepted. Declarations matter as much as definitions
+// here: a crate genuinely in use typically appears as an external symbol
+// (its own functions being called) even when none of *its* functions are
+// ever monomorphized/defined in this particular module.
+static RE_PATH_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)::").unwrap());
+
+fn collect_referenced_roots(module: &Module) -> HashSet<String> {
+    let mut roots = HashSet::new();
+    let mut collect_from = |mangled: &str| {
+        let demangled = format!("{:#}", rustc_demangle::demangle(mangled));
+        for caps in RE_PATH_ROOT.captures_iter(&demangled) {
+            roots.insert(caps[1].to_string());
+        }
+    };
+    for func in &module.functions {
+        collect_from(&func.name);
+    }
+    for decl in &module.func_declarations {
+        collect_from(&decl.name);
+    }
+    roots
+}
+
 /// Pull the callee's mangled name out of a `call` target operand. Returns
 /// `None` for indirect calls (function pointers, vtable dispatch) -- the
 /// callee is a `LocalOperand` there, not a `GlobalReference`, so there's no
@@ -205,8 +245,25 @@ fn callee_name(op: &Operand) -> Option<String> {
 /// functions have no body to scan (as expected -- they're callees, not call
 /// sites, from this module's point of view).
 pub fn scan_ac_llvm(module: &Module, sigs: &[AcSignature]) -> Vec<AcLlvmMatch> {
-    let sig_matchers: Vec<(&AcSignature, Vec<Matcher>)> =
-        sigs.iter().map(|sig| (sig, make_matchers(sig))).collect();
+    // find_ac_points_src-only libraries -- see the matching comment on
+    // `ac_finder::scan_ac_mir` for why: `reqwest::RequestBuilder::header`/
+    // `HeaderMap::get` would match a demangled call site for *any* header
+    // name (`Content-Type` included) / *any* `.get`-shaped call at all, not
+    // just credential ones, since call-shape matching alone can't inspect
+    // which string constant was actually passed.
+    let sig_matchers: Vec<(&AcSignature, Vec<Matcher>)> = sigs
+        .iter()
+        .filter(|sig| {
+            sig.library != "axum-extractors"
+                && sig.library != "actix-web-extractors"
+                && sig.library != "outbound-credential-header"
+                && sig.library != "inbound-credential-header"
+                && sig.kind != "attribute" // proc-macro attributes expand away before codegen -- no realistic callee text here
+        })
+        .map(|sig| (sig, make_matchers(sig)))
+        .collect();
+
+    let referenced_roots = collect_referenced_roots(module);
 
     let mut matches = Vec::new();
 
@@ -240,6 +297,12 @@ pub fn scan_ac_llvm(module: &Module, sigs: &[AcSignature]) -> Vec<AcLlvmMatch> {
                 'sig: for (sig, matchers) in &sig_matchers {
                     for matcher in matchers {
                         if matcher.pattern.is_match(&probe) {
+                            if matcher.strategy == "short-name" {
+                                let crate_root = sig.fn_name.split("::").next().unwrap_or("");
+                                if !referenced_roots.contains(crate_root) {
+                                    continue; // no corroborating reference to this crate anywhere in the module
+                                }
+                            }
                             let debugloc = instr.get_debug_loc();
                             // Always None for now -- see the `ac_hint` doc
                             // comment on `AcLlvmMatch` for why.
@@ -259,6 +322,7 @@ pub fn scan_ac_llvm(module: &Module, sigs: &[AcSignature]) -> Vec<AcLlvmMatch> {
                                 mangled_name: mangled.clone(),
                                 demangled_name: demangled.clone(),
                                 ac_hint,
+                                verified_via: sig.verified_via.clone(),
                             });
                             break 'sig;
                         }
@@ -284,6 +348,8 @@ mod tests {
             category: category.to_string(),
             return_type: String::new(),
             parameter_type: vec![],
+            verified_via: "general-knowledge".to_string(),
+            kind: "call".to_string(),
         }
     }
 
@@ -362,6 +428,7 @@ entry:
         assert_eq!(matches[0].demangled_name, "jsonwebtoken::decode");
         assert_eq!(matches[0].mangled_name, "_ZN12jsonwebtoken6decode17hdd5a20d74b58ee6dE");
         assert_eq!(matches[0].callsite.function, "my_app::verify_token");
+        assert_eq!(matches[0].verified_via, "general-knowledge");
     }
 
     #[test]
@@ -385,6 +452,87 @@ entry:
         assert_eq!(matches[0].match_strategy, "angle-bracket");
         assert_eq!(matches[0].demangled_name, "<casbin::Enforcer as casbin::CoreApi>::enforce");
         assert_eq!(matches[0].callsite.function, "my_app::check_permission");
+    }
+
+    #[test]
+    fn outbound_credential_header_is_not_matched_in_llvm_ir() {
+        // Regression guard, mirrors ac_finder's
+        // outbound_credential_header_is_not_matched_in_mir: a plain
+        // `.header("Content-Type", ...)` call demangles to the exact same
+        // callee shape as `.header("Authorization", ...)` -- LLVM call-shape
+        // matching has no way to see which string constant was passed -- so
+        // `outbound-credential-header` must not be loaded into this
+        // scanner's matchers at all.
+        const IR: &str = r#"
+declare ptr @_ZN7reqwest14RequestBuilder6header17habcdef0123456789E(ptr, ptr, i64, ptr, i64)
+
+define void @_ZN6my_app4ping17h1111111111111111E() {
+entry:
+  %1 = call ptr @_ZN7reqwest14RequestBuilder6header17habcdef0123456789E(ptr null, ptr null, i64 0, ptr null, i64 0)
+  ret void
+}
+"#;
+        let module = Module::from_ir_str(IR).expect("valid IR");
+        let sigs = vec![sig(
+            "outbound-credential-header",
+            "reqwest::RequestBuilder::header",
+            "authentication",
+        )];
+        let matches = scan_ac_llvm(&module, &sigs);
+        assert!(
+            matches.is_empty(),
+            "outbound-credential-header should never be matched in LLVM IR: {matches:#?}"
+        );
+    }
+
+    #[test]
+    fn short_name_match_suppressed_without_crate_reference() {
+        // Regression test: "short-name" matches on the last two path
+        // segments -- "CoreApi::enforce" for casbin::CoreApi::enforce -- so
+        // an unrelated `CoreApi::enforce` (no `casbin` symbol anywhere else
+        // in the module) must not be misreported as a casbin call just
+        // because it happens to share the method's short name.
+        // `_ZN7CoreApi7enforce17h...E` demangles to `CoreApi::enforce`.
+        const IR: &str = r#"
+declare zeroext i1 @_ZN7CoreApi7enforce17h881d5c680406215aE(ptr)
+
+define zeroext i1 @_ZN6my_app18check_local_policy17h9f9bc29708855812E(ptr %policy) {
+entry:
+  %r = call zeroext i1 @_ZN7CoreApi7enforce17h881d5c680406215aE(ptr %policy)
+  ret i1 %r
+}
+"#;
+        let module = Module::from_ir_str(IR).expect("valid IR");
+        let sigs = vec![sig("casbin-rs", "casbin::CoreApi::enforce", "policy-enforcement")];
+        let matches = scan_ac_llvm(&module, &sigs);
+        assert!(
+            matches.is_empty(),
+            "unrelated CoreApi::enforce should not match casbin without a crate reference: {matches:#?}"
+        );
+    }
+
+    #[test]
+    fn short_name_match_allowed_with_crate_reference() {
+        // Same callee shape as above, but this time a `casbin::`-rooted
+        // symbol genuinely appears elsewhere in the module (a declared
+        // external function) -- real corroborating evidence -- so the
+        // short-name match should still fire.
+        // `_ZN6casbin8Enforcer3new17h...E` demangles to `casbin::Enforcer::new`.
+        const IR: &str = r#"
+declare zeroext i1 @_ZN7CoreApi7enforce17h881d5c680406215aE(ptr)
+declare void @_ZN6casbin8Enforcer3new17habcdef0123456789E()
+
+define zeroext i1 @_ZN6my_app13check_access17h9f9bc29708855812E(ptr %enforcer) {
+entry:
+  %r = call zeroext i1 @_ZN7CoreApi7enforce17h881d5c680406215aE(ptr %enforcer)
+  ret i1 %r
+}
+"#;
+        let module = Module::from_ir_str(IR).expect("valid IR");
+        let sigs = vec![sig("casbin-rs", "casbin::CoreApi::enforce", "policy-enforcement")];
+        let matches = scan_ac_llvm(&module, &sigs);
+        assert_eq!(matches.len(), 1, "expected the short-name match to fire: {matches:#?}");
+        assert_eq!(matches[0].match_strategy, "short-name");
     }
 
     #[test]

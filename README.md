@@ -99,6 +99,39 @@ prints that binary's real `--help`. No LLVM feature here — the LLM finder has
 no LLVM-IR scanner. Run `scripts/llm_api_finder.sh` with no arguments for the
 full usage text.
 
+### Convenience wrapper: `scripts/scan_repo.sh`
+
+[`scripts/scan_repo.sh`](scripts/scan_repo.sh) runs the AC finder against an
+*entire external repo* in one command — give it a GitHub URL (it clones a
+shallow copy into `repos/`, gitignored) or a local path, and it runs
+`find_ac_points_all` over the whole thing (Rust source + JS/TS source) and
+writes one merged JSON report:
+
+```sh
+scripts/scan_repo.sh https://github.com/traceloop/hub
+scripts/scan_repo.sh https://github.com/bionic-gpt/bionic-gpt --pull
+scripts/scan_repo.sh ../some-local-checkout --name local-app
+scripts/scan_repo.sh https://github.com/foo/bar -- --all-http-calls
+```
+
+Output goes to `ac_matches_<name>.json` at the repo root by default (`--name`
+is derived from the URL/path basename if not given; also gitignored). An
+already-cloned target is reused as-is unless you pass `--pull`. Anything
+after a literal `--` is forwarded to `find_ac_points_all`.
+
+By default this only runs the two purely-syntactic scans (Rust source +
+JS/TS source) — it doesn't build the target, so it can't produce a RUPTA MIR
+dump or an LLVM IR module on its own. If you already have one for the target
+(generated separately), fold it into the same merged report with
+`--mir-dump`/`--llvm-ir`:
+
+```sh
+scripts/scan_repo.sh ../local-checkout --mir-dump ../local-checkout.mir.txt
+scripts/scan_repo.sh ../local-checkout --llvm-ir ../local-checkout.ll   # auto-adds --features llvm-ir-scan
+```
+
+Run `scripts/scan_repo.sh --help` for the full usage text.
+
 ## Usage
 
 ```sh
@@ -299,13 +332,42 @@ per-entry below). The main `afg` tool (MUMP/STPA) does not read any of them.
   in one pass and merges the output — see [Running both scans
   together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
 - `ac_functions.json`: access-control (authn/authz) call signatures —
-  actix-web-httpauth, jsonwebtoken, casbin-rs, oso, biscuit-auth, etc.
-  Consumed by [`find_ac_points`](src/AC_FINDER.md), which scans a RUPTA MIR
-  dump; by `find_ac_points_src`, which scans Rust source directly (no
-  MIR/RUPTA step needed) for the same call sites; and by
-  `find_ac_points_llvm` (opt-in, `--features llvm-ir-scan`), which scans a
-  real LLVM IR module, matching demangled call targets against the same
-  catalogue.
+  actix-web-httpauth, jsonwebtoken, casbin-rs, oso, biscuit-auth, etc., plus
+  `custom-authz-module` (a worked example of cataloging a target's own
+  in-house authz function — an ordinary call site, so it works in every
+  scanner below) and four patterns that go beyond ordinary call sites:
+  `axum-extractors`/`actix-web-extractors` (hand-rolled `impl
+  FromRequestParts`/`impl FromRequest` auth guards, axum's typed
+  bearer/basic header extraction, and handler-parameter *usage* of an
+  already-defined guard type, e.g. `current_user: Jwt`, wherever it appears
+  in the tree — see AC_FINDER.md's `extractor-param-usage`),
+  `outbound-credential-header` (the app authenticating *itself* to a
+  downstream API via an `Authorization`/`x-api-key`/etc. header —
+  literal or, with lower confidence, a variable header name near an
+  auth-flavored signal elsewhere in the file — or `.bearer_auth(...)`), and
+  `inbound-credential-header` (the mirror image: a hand-rolled check of an
+  *incoming* request's headers, e.g. `headers.get("Authorization")`, instead
+  of a structured extractor) — all four `find_ac_points_src` only, since
+  MIR/LLVM call-shape matching can't safely replicate them without risking
+  false positives (see AC_FINDER.md's Supported libraries table and Known
+  blind spots). Each entry's `verified_via` (how the signature's shape was
+  established — e.g. `general-knowledge`, `docs.rs`, `manual`) is echoed onto
+  every match in the JSON output across all three scanners below, so a
+  consumer can triage speculative matches from verified ones without
+  cross-referencing the catalogue by hand. An entry can also set `"kind":
+  "attribute"` to mark a proc-macro attribute guard (e.g. actix-web-grants'
+  `#[has_permissions(...)]`) rather than a function/method call — see
+  AC_FINDER.md's Known blind spots. Consumed by
+  [`find_ac_points`](src/AC_FINDER.md), which scans a RUPTA MIR dump; by
+  `find_ac_points_src`, which scans Rust source directly (no MIR/RUPTA step
+  needed) for the same call sites plus the `find_ac_points_src`-only patterns
+  above (including `kind: "attribute"` entries), and strips comments before
+  matching so an explanatory code comment can't be mistaken for a real call;
+  and by `find_ac_points_llvm` (opt-in, `--features llvm-ir-scan`), which
+  scans a real LLVM IR module, matching demangled call targets against the
+  same catalogue minus those same four plus any `kind: "attribute"` entries
+  (attributes expand away before codegen, so neither the MIR nor the LLVM-IR
+  scanner has a realistic callee to match).
 - `ac_functions_js.json`: the JS/TS equivalent, consumed by
   [`find_ac_points_js`](src/AC_FINDER_JS.md), which scans JS/TS source text
   directly for access-control middleware, guards, and raw HTTP authz calls.

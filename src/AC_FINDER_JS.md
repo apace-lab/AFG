@@ -50,6 +50,13 @@ published docs. Spot-check against the target's actual installed version
 which is a bare pattern match with no SDK to confirm it against and will hit
 unrelated code that happens to share a common function name.
 
+Every call-shape pattern is matched with a leading word-boundary check, so a
+short, generic pattern name only matches a real standalone identifier — casl's
+`can`/jsonwebtoken's `verify` match `can(...)`/`verify(...)` but not `scan(...)`
+or `jwtverify(...)`, even though the pattern text is a substring of those
+calls. Combined with `require_import` gating, this is what keeps single-word
+patterns useful instead of pure noise.
+
 ## Build
 
 ```sh
@@ -206,6 +213,20 @@ that scan (at least one is required). `--llvm-ir` only works on a binary
 built with `--features llvm-ir-scan` — see
 [`AC_FINDER.md`](./AC_FINDER.md#scanning-real-llvm-ir).
 
+## Comment stripping
+
+`find_ac_points_js` strips `//` and `/* */` comments (blanking them to
+spaces, preserving line numbers) before any matching runs — mirrors
+`find_ac_points_src`'s `strip_comments`, adapted for JS/TS: unlike Rust,
+block comments here don't nest (`/* outer /* inner */ still outer */` ends
+at the first `*/`, matching real JS semantics), and string/template-literal
+contents (`` `...` `` included) are left untouched, since `ac_hint` scanning
+needs those intact. This is what keeps an explanatory comment describing a
+call pattern (or a commented-out import) from being mistaken for a live one
+— see `strip_comments`'s tests in `src/ac_finder_js.rs`. Doesn't special-case
+regex literals (`/pattern/flags`); see the function's doc comment for that
+trade-off.
+
 ## Known blind spots
 
 **A codebase's own in-house guard sharing a catalogue pattern's name** — a
@@ -240,6 +261,30 @@ class Guard {
 parsing, so it will still be reported. Same shape of caveat as the
 alias-resolution limits above: expect some over-counting from
 method-shorthand declarations named after a generic pattern.
+
+**A locally re-exported wrapper around a generic-name SDK call** — `auth`
+(`kind: "generic name — gated by import"`) needs `require_import` gating for
+the same reason as every other single-word pattern in this catalogue: on its
+own it's just an English word. But that gate is per-file and checks the
+*module specifier*, not what a name resolves to across files — and Auth.js
+v5's own recommended idiom is to call `NextAuth({...})` exactly once in a
+root `auth.ts`, destructure `{ auth, signIn, signOut, handlers }` from the
+result, and have every other file `import { auth } from "@/auth"` (a local
+path, never `"next-auth"` itself). Every one of those consumer call sites
+fails the package-import gate — real, audited example: the [official
+`next-auth-example`](https://github.com/nextauthjs/next-auth-example) repo's
+`middleware.ts` (`export { auth as middleware } from "auth"`, the guard
+protecting every non-API route in the app) and
+`app/api/protected/route.ts` both come up empty. Cataloging `NextAuth` itself
+(the constructor call, unambiguous and always imported directly from the
+real `next-auth` package) mitigates this by guaranteeing the *definition*
+site is never silently invisible — but it doesn't recover the individual
+downstream call sites, which would need real cross-file symbol resolution
+(tracing a local import back to where it's re-exported from) that this
+tool's per-file text scanning doesn't do. If a next-auth/Auth.js v5 codebase
+shows only one `NextAuth`-library hit despite auth checks scattered through
+many route files, this is why — check for this re-export idiom before
+concluding the checks aren't there.
 
 ## Troubleshooting
 

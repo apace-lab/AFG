@@ -1,7 +1,15 @@
 // Demo target for find_ac_points -- exercises every AC library in
-// datasets/ac_functions.json, every category (authentication, authorization,
-// policy-enforcement, raw-http), and all 3 match strategies (direct,
-// angle-bracket, short-name) in one file.
+// datasets/ac_functions.json that applies to MIR call-shape matching, every
+// category (authentication, authorization, policy-enforcement, raw-http),
+// and all 3 match strategies (direct, angle-bracket, short-name) in one
+// file. Three libraries are intentionally absent: "axum-extractors" and
+// "actix-web-extractors" (both a trait-impl/type-usage pattern with no
+// realistic MIR call shape to exercise -- see src/ac_finder_rs_src.rs) and
+// "outbound-credential-header"'s `reqwest::RequestBuilder::header` entry
+// specifically (excluded from this scanner's matchers entirely -- see the
+// comment in ac_finder::scan_ac_mir -- since MIR call-shape matching can't
+// inspect which header name was actually passed, unlike find_ac_points_src's
+// header-name-aware scan).
 //
 // This is NOT a real RUPTA MIR dump -- it's hand-written text in RUPTA's
 // output shape (`[FuncId(N) - "path"]`, `bbN: { ... }` blocks, UFCS call
@@ -188,7 +196,21 @@ fn check_password_argon2() -> () {
     bb1: { return; }
 }
 
-[FuncId(14) - "my_app::introspect_token"]
+[FuncId(14) - "my_app::load_rbac"]
+fn load_rbac() -> () {
+    let _0: ();
+    let _1: db::Transaction;
+    let _2: db::authz::Authentication;
+    let _3: i32;
+    let _4: std::result::Result<db::authz::Rbac, db::TokioPostgresError>;
+
+    bb0: {
+        _4 = db::authz::get_permissions(move _1, move _2, move _3) -> [return: bb1, unwind continue];
+    }
+    bb1: { return; }
+}
+
+[FuncId(15) - "my_app::introspect_token"]
 fn introspect_token() -> () {
     let _0: ();
     let _1: alloc::string::String;
@@ -208,7 +230,7 @@ fn introspect_token() -> () {
     bb3: { return; }
 }
 
-[FuncId(15) - "my_app::ping_health"]
+[FuncId(16) - "my_app::ping_health"]
 fn ping_health() -> () {
     let _0: ();
     let _1: reqwest::Client;

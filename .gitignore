@@ -6,3 +6,9 @@ Cargo.lock.bak
 # Scratch .rlib output from regenerating examples/ac_demo_llvm.ll -- see
 # src/AC_FINDER.md#regenerating-examplesac_demo_llvmll
 examples/src/ac_demo_llvm/.build/
+
+# External repos cloned in for testing the AC/LLM finders against real code
+/repos/
+
+# scripts/scan_repo.sh output (per-repo AC-finder scan results)
+/ac_matches_*.json

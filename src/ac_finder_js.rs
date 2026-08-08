@@ -451,6 +451,92 @@ fn is_fn_declaration(line: &str, start: usize) -> bool {
     }
 }
 
+// ── Comment stripping ────────────────────────────────────────────────────────
+
+/// Replace `//` line comments and `/* */` block comments with spaces,
+/// leaving every newline and every other character -- including
+/// string/template-literal contents, since `raw-http-authz`'s `ac_hint`
+/// scanning needs those intact -- untouched. Mirrors
+/// `ac_finder_rs_src::strip_comments`: an example call pattern written out
+/// in an explanatory comment must not be mistaken for a real call, and a
+/// stray unbalanced `(`/`{` in a comment must not desync the paren/brace
+/// depth-scanners elsewhere in this file. Line numbers computed against the
+/// result line up exactly with the original, since replacing characters
+/// with spaces never adds or removes a `\n`.
+///
+/// Unlike Rust, JS/TS block comments do **not** nest -- `/* outer /* inner
+/// */ still outer */` ends at the first `*/`, and " still outer */" is live
+/// (if malformed) code -- so this doesn't track comment depth the way the
+/// Rust version does.
+///
+/// Doesn't special-case regex literals (`/pattern/flags`) -- same class of
+/// trade-off this file already accepts for paren/string scanning elsewhere
+/// (`find_matching_close_paren` etc. don't understand them either): a regex
+/// containing a literal, unescaped `/*`-looking sequence (rare -- regex
+/// literals almost always escape internal `/`) could in principle be
+/// misread as starting a block comment.
+fn strip_comments(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::with_capacity(content.len());
+    let mut i = 0usize;
+    let mut in_string: Option<char> = None;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if let Some(q) = in_string {
+            out.push(c);
+            if c == '\\' && i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == '\'' || c == '"' || c == '`' {
+            in_string = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            while i < chars.len() {
+                if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    out.push(' ');
+                    out.push(' ');
+                    i += 2;
+                    break;
+                }
+                out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                i += 1;
+            }
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    out
+}
+
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 struct CallMatcher<'a> {
@@ -461,7 +547,17 @@ struct CallMatcher<'a> {
 fn make_call_matchers(sigs: &[JsAcSignature]) -> Vec<CallMatcher<'_>> {
     sigs.iter()
         .filter_map(|sig| {
-            let pat = format!(r"{}\s*\(", regex::escape(&sig.pattern));
+            // Leading \b so a single-word catalogue pattern only matches a
+            // real standalone identifier -- without it, generic names like
+            // casl's "can" or jsonwebtoken's "verify" match as *substrings*
+            // of unrelated calls (`scan(`, `reauth(`, `jwtverify(`), which is
+            // a real false-positive source since these patterns already rely
+            // on `require_import` (or the caller's own judgment for
+            // generic-authz-checks) rather than specificity to stay useful.
+            // Mirrors the boundary check `make_source_matchers` already does
+            // for the Rust source scanner's "short-name"/"type-method"
+            // strategies.
+            let pat = format!(r"\b{}\s*\(", regex::escape(&sig.pattern));
             Regex::new(&pat).ok().map(|pattern| CallMatcher { sig, pattern })
         })
         .collect()
@@ -485,13 +581,18 @@ pub fn scan_ac_js_source(
     sigs: &[JsAcSignature],
     opts: &AcScanOptions,
 ) -> Vec<JsAcMatch> {
-    let imports = collect_imports(content);
+    // All matching/gating below runs against `cleaned` (comments blanked to
+    // spaces), not `content` -- see `strip_comments`. `content`/`lines` stay
+    // around purely so `raw_line` shows the real, unmodified source text.
+    let cleaned = strip_comments(content);
+    let imports = collect_imports(&cleaned);
     let matchers = make_call_matchers(sigs);
-    let alias_map = build_alias_map(content, &matchers, &imports);
+    let alias_map = build_alias_map(&cleaned, &matchers, &imports);
 
     let lines: Vec<&str> = content.lines().collect();
+    let cleaned_lines: Vec<&str> = cleaned.lines().collect();
 
-    let literals: Vec<Vec<String>> = lines
+    let literals: Vec<Vec<String>> = cleaned_lines
         .iter()
         .map(|line| {
             RE_STRING_LIT
@@ -509,8 +610,9 @@ pub fn scan_ac_js_source(
 
     let mut matches = Vec::new();
 
-    for (idx, line) in lines.iter().enumerate() {
+    for (idx, cline) in cleaned_lines.iter().enumerate() {
         let lineno = idx + 1;
+        let raw_line = lines.get(idx).map(|l| l.trim().to_string()).unwrap_or_default();
 
         // ── AC call-shape matches ──
         // Collect spans first: some patterns are textual substrings of a more
@@ -519,7 +621,7 @@ pub fn scan_ac_js_source(
         // not a finding. Cross-library overlaps are kept — genuine ambiguity.
         let candidates: Vec<(&CallMatcher, usize, usize)> = matchers
             .iter()
-            .filter_map(|m| m.pattern.find(line).map(|mat| (m, mat.start(), mat.end())))
+            .filter_map(|m| m.pattern.find(cline).map(|mat| (m, mat.start(), mat.end())))
             .collect();
 
         for (i, (m, start, end)) in candidates.iter().enumerate() {
@@ -533,7 +635,7 @@ pub fn scan_ac_js_source(
             if shadowed {
                 continue;
             }
-            if is_fn_declaration(line, *start) {
+            if is_fn_declaration(cline, *start) {
                 continue; // e.g. `function requireRole(...)` shadowing a call to the same-named pattern
             }
             let confirmed = import_satisfies(&imports, &m.sig.packages);
@@ -547,13 +649,13 @@ pub fn scan_ac_js_source(
                 category: m.sig.category.clone(),
                 match_strategy: if confirmed { "call+import" } else { "call-only" }.to_string(),
                 callsite: JsAcCallSite { file: file.to_string(), line: lineno },
-                raw_line: line.trim().to_string(),
+                raw_line: raw_line.clone(),
                 ac_hint: None,
             });
         }
 
         // ── raw HTTP calls to an access-control service ──
-        if RE_HTTP_TRIGGER.is_match(line) {
+        if RE_HTTP_TRIGGER.is_match(cline) {
             let start = idx.saturating_sub(HINT_WINDOW_BEFORE);
             let end = (idx + HINT_WINDOW_AFTER + 1).min(literals.len());
             let nearby: Vec<&String> = literals[start..end].iter().flatten().collect();
@@ -563,7 +665,7 @@ pub fn scan_ac_js_source(
                 matches.push(JsAcMatch {
                     library: "raw-http-authz".to_string(),
                     pattern: RE_HTTP_TRIGGER
-                        .find(line)
+                        .find(cline)
                         .map(|m| m.as_str().trim_end_matches('(').trim().to_string())
                         .unwrap_or_default(),
                     kind: "raw HTTP call to an access-control service".to_string(),
@@ -571,7 +673,7 @@ pub fn scan_ac_js_source(
                     match_strategy: if hint.is_some() { "http+path-hint" } else { "http-call-only" }
                         .to_string(),
                     callsite: JsAcCallSite { file: file.to_string(), line: lineno },
-                    raw_line: line.trim().to_string(),
+                    raw_line,
                     ac_hint: hint,
                 });
             }
@@ -581,15 +683,15 @@ pub fn scan_ac_js_source(
     // ── Bare-reference (middleware-by-reference) matches ──
     // Operates over the whole file, not per-line, since a route call's
     // argument list can span multiple lines.
-    for trigger in RE_ROUTE_TRIGGER.captures_iter(content) {
+    for trigger in RE_ROUTE_TRIGGER.captures_iter(&cleaned) {
         if !looks_like_express_receiver(&trigger[1]) {
             continue;
         }
         let open_paren = trigger.get(0).unwrap().end();
-        let Some(close_paren) = find_matching_close_paren(content, open_paren) else {
+        let Some(close_paren) = find_matching_close_paren(&cleaned, open_paren) else {
             continue;
         };
-        let args_text = &content[open_paren..close_paren];
+        let args_text = &cleaned[open_paren..close_paren];
 
         for (arg, rel_offset) in collect_reference_candidates(args_text) {
             let mut matched_directly = false;
@@ -604,7 +706,7 @@ pub fn scan_ac_js_source(
                     continue;
                 }
                 let abs_offset = open_paren + rel_offset;
-                let lineno = line_of_byte_offset(content, abs_offset);
+                let lineno = line_of_byte_offset(&cleaned, abs_offset);
                 let raw_line = lines.get(lineno - 1).map(|l| l.trim().to_string()).unwrap_or_default();
                 matches.push(JsAcMatch {
                     library: sig.library.clone(),
@@ -624,7 +726,7 @@ pub fn scan_ac_js_source(
             if !matched_directly {
                 if let Some(hits) = alias_map.get(&arg) {
                     let abs_offset = open_paren + rel_offset;
-                    let lineno = line_of_byte_offset(content, abs_offset);
+                    let lineno = line_of_byte_offset(&cleaned, abs_offset);
                     let raw_line = lines.get(lineno - 1).map(|l| l.trim().to_string()).unwrap_or_default();
                     for (sig, confirmed) in hits {
                         matches.push(JsAcMatch {
@@ -868,6 +970,42 @@ router.get("/x", requireRole("admin"), handler);
     }
 
     #[test]
+    fn generic_pattern_does_not_match_as_a_substring() {
+        // Regression test: single-word catalogue patterns like "can"/"auth"/
+        // "verify" must only match a standalone identifier, not any
+        // identifier ending in those letters -- `scan(`, `reauth(`,
+        // `jwtverify(` are unrelated calls that happen to contain the
+        // pattern text.
+        const SRC: &str = r#"
+import { can } from "@casl/ability";
+import jwt from "jsonwebtoken";
+function scan(list) { return list; }
+function reauth(session) { return session; }
+function jwtverify(token) { return token; }
+scan([1, 2, 3]);
+reauth(session);
+jwtverify(token);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("misc.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.pattern != "can"),
+            "'can' should not match inside 'scan(': {:#?}",
+            matches
+        );
+        assert!(
+            matches.iter().all(|m| m.pattern != "auth"),
+            "'auth' should not match inside 'reauth(': {:#?}",
+            matches
+        );
+        assert!(
+            matches.iter().all(|m| m.pattern != "verify"),
+            "'verify' should not match inside 'jwtverify(': {:#?}",
+            matches
+        );
+    }
+
+    #[test]
     fn no_false_positives_on_unrelated_code() {
         const SRC: &str = r#"
 import React from "react";
@@ -879,6 +1017,79 @@ export function sum(a, b) { return a + b; }
         let sigs = load_ac_js_signatures(datasets_path()).unwrap();
         let matches = scan_ac_js_source("Button.tsx", SRC, &sigs, &opts());
         assert!(matches.is_empty(), "unexpected matches: {:#?}", matches);
+    }
+
+    // ── comment stripping ────────────────────────────────────────────────
+
+    #[test]
+    fn strip_comments_blanks_line_and_block_comments_but_preserves_line_numbers() {
+        const SRC: &str = "// a line comment\nfunction real() {}\n/* a block\n   comment */\nfunction other() {}\n";
+        let cleaned = strip_comments(SRC);
+        assert_eq!(cleaned.lines().count(), SRC.lines().count());
+        assert!(!cleaned.contains("a line comment"));
+        assert!(!cleaned.contains("a block"));
+        assert!(cleaned.contains("function real() {}"));
+        assert!(cleaned.contains("function other() {}"));
+    }
+
+    #[test]
+    fn strip_comments_does_not_nest_block_comments() {
+        // Unlike Rust, JS/TS block comments end at the first `*/` regardless
+        // of any `/*` seen since -- so the comment here is only "/* outer /*
+        // inner */", and the trailing " still outer */" is left alone (it
+        // would be live, if malformed, code in real JS).
+        const SRC: &str = "/* outer /* inner */ still outer */";
+        let cleaned = strip_comments(SRC);
+        assert!(!cleaned.contains("inner"));
+        assert!(cleaned.contains("still outer */"));
+        // The comment portion's own "outer" is blanked -- only the trailing,
+        // live-code "outer" survives.
+        assert_eq!(cleaned.matches("outer").count(), 1);
+    }
+
+    #[test]
+    fn strip_comments_preserves_string_and_template_literals_containing_slashes() {
+        const SRC: &str = r#"const url = "https://example.com/introspect";"#;
+        assert_eq!(strip_comments(SRC), SRC);
+        const TEMPLATE: &str = "const url = `https://example.com/${path}`;";
+        assert_eq!(strip_comments(TEMPLATE), TEMPLATE);
+    }
+
+    #[test]
+    fn call_shaped_text_inside_a_comment_is_not_reported() {
+        // Regression test mirroring the exact bug found in the Rust source
+        // scanner: an explanatory comment describing a call pattern must not
+        // itself be matched as a real call.
+        const SRC: &str = r#"
+import passport from "passport";
+// don't call passport.authenticate("jwt") here -- see the module docs
+function noop() {}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("noop.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "passport"),
+            "call-shaped text inside a comment was mistaken for a real call: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn commented_out_import_does_not_satisfy_require_import_gate() {
+        // A commented-out import must not count as evidence the package is
+        // actually available -- jsonwebtoken's bare "verify" pattern
+        // requires a confirming import.
+        const SRC: &str = r#"
+// import jwt from "jsonwebtoken";
+const decoded = verify(token, secret);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("auth.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "jsonwebtoken"),
+            "commented-out import should not satisfy the require_import gate: {:#?}",
+            matches
+        );
     }
 
     #[test]

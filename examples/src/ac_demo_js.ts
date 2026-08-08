@@ -11,6 +11,7 @@ import { UseGuards, SetMetadata } from "@nestjs/common";
 import { can, defineAbility } from "@casl/ability";
 import { enforceSync } from "casbin";
 import { getServerSession } from "next-auth";
+import NextAuth from "next-auth";
 import { verifyIdToken } from "firebase-admin/auth";
 import { requiresAuth } from "express-openid-connect";
 import { ensureLoggedIn } from "connect-ensure-login";
@@ -62,6 +63,13 @@ function evaluatePolicy(sub, obj, act) {
 async function currentSession(req) {
   return await getServerSession(req);
 }
+
+// next-auth -- call+import, authentication (Auth.js v5 central config --
+// see "A locally re-exported wrapper" in AC_FINDER_JS.md for why this is
+// cataloged separately from the "auth" pattern above)
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  providers: [],
+});
 
 // firebase-admin-auth -- call+import, authentication
 async function verifyFirebaseToken(idToken: string) {

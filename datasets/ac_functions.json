@@ -4,7 +4,8 @@
         "usage": "find_ac_points matches MIR call sites against fn_name using the same three-strategy regex approach as find_llm_calls (direct / angle-bracket / short-name — see llm_api_finder.rs for the exact matching rules, reused verbatim by ac_finder.rs).",
         "match_rule": "same textual match as llm_api_functions.json: direct path match, angle-bracket turbofish match, or last-two-segment short-name match against the MIR callee text",
         "category_values": "authentication | authorization | policy-enforcement | raw-http",
-        "verification_caveat": "These signatures come from general knowledge of each crate's public API shape and have not been independently re-verified against current published docs (no context7/docs.rs lookup was performed when this file was authored). Spot-check against the target's actual installed crate version before trusting a match."
+        "verification_caveat": "These signatures come from general knowledge of each crate's public API shape and have not been independently re-verified against current published docs (no context7/docs.rs lookup was performed when this file was authored). Spot-check against the target's actual installed crate version before trusting a match.",
+        "kind_note": "Optional per-entry field, defaults to \"call\" when absent. \"attribute\" marks a proc-macro attribute guard (e.g. actix-web-grants' #[has_permissions(...)]) rather than a function/method call -- find_ac_points_src is the only scanner that looks for these (via scan_attribute_guards, gated by crate reference like the method/short-name strategies); find_ac_points (MIR) and find_ac_points_llvm skip \"attribute\" entries entirely since the attribute expands away before codegen and leaves no realistic callee text to match."
     },
 
     "actix-web-httpauth": [
@@ -45,6 +46,38 @@
             "return_type": "bool",
             "parameter_type": ["&self", "T"],
             "verified_via": "general-knowledge"
+        },
+        {
+            "fn_name": "actix_web_grants::proc_macro::has_permissions",
+            "category": "authorization",
+            "return_type": "",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge",
+            "kind": "attribute"
+        },
+        {
+            "fn_name": "actix_web_grants::proc_macro::has_roles",
+            "category": "authorization",
+            "return_type": "",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge",
+            "kind": "attribute"
+        },
+        {
+            "fn_name": "actix_web_grants::proc_macro::has_any_role",
+            "category": "authorization",
+            "return_type": "",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge",
+            "kind": "attribute"
+        },
+        {
+            "fn_name": "actix_web_grants::proc_macro::has_any_permission",
+            "category": "authorization",
+            "return_type": "",
+            "parameter_type": ["&str"],
+            "verified_via": "general-knowledge",
+            "kind": "attribute"
         }
     ],
 
@@ -189,6 +222,17 @@
         }
     ],
 
+    "yup-oauth2": [
+        {
+            "fn_name": "yup_oauth2::authenticator::Authenticator::token",
+            "category": "authentication",
+            "return_type": "Result<AccessToken, Error>",
+            "parameter_type": ["&self", "&[&str]"],
+            "verified_via": "docs.rs",
+            "taint_role": "Fetches an OAuth2 access token for a Google service account (via ServiceAccountAuthenticator::builder(key).build()), the yup-oauth2 analog of oauth2::Client::exchange_code above -- seen in the wild authenticating an app to Google Vertex AI/Cloud APIs. Same gated method-name matching as the rest of this catalogue; \"token\" is a common enough word that a false positive is possible on an unrelated .token(...) call in the same file, mitigated by the usual yup_oauth2 crate-reference gate."
+        }
+    ],
+
     "bcrypt": [
         {
             "fn_name": "bcrypt::verify",
@@ -206,6 +250,117 @@
             "return_type": "Result<(), password_hash::Error>",
             "parameter_type": ["&self", "&[u8]", "&PasswordHash"],
             "verified_via": "docs.rs"
+        }
+    ],
+
+    "axum-extractors": [
+        {
+            "fn_name": "axum::extract::FromRequestParts",
+            "category": "authentication",
+            "return_type": "n/a (trait impl, not a call)",
+            "parameter_type": ["&mut Parts", "&S"],
+            "verified_via": "docs.rs",
+            "taint_role": "custom axum auth extractor: apps that don't pull in axum-login/actix-identity/etc. almost always hand-roll their auth guard as `impl FromRequestParts<S> for MyAuthedUser`, decoding a bearer/JWT/session header inside `from_request_parts`. Matched as a trait-impl definition site (heuristically gated on an auth-flavored signal in the impl body, e.g. Authorization/Bearer/JWT/session/cookie/X-Forwarded-*), not a function call, since the pattern is a definition rather than an invocation."
+        },
+        {
+            "fn_name": "axum_extra::headers::Authorization",
+            "category": "authentication",
+            "return_type": "n/a (type usage, not a call)",
+            "parameter_type": ["Bearer | Basic"],
+            "verified_via": "docs.rs",
+            "taint_role": "`TypedHeader<Authorization<Bearer>>` / `TypedHeader<Authorization<Basic>>` handler-parameter extraction is axum's idiomatic way to pull a bearer/basic auth header out of a request; matched as a type-usage site rather than a call."
+        }
+    ],
+
+    "actix-web-extractors": [
+        {
+            "fn_name": "actix_web::FromRequest",
+            "category": "authentication",
+            "return_type": "n/a (trait impl, not a call)",
+            "parameter_type": ["&HttpRequest", "&mut Payload"],
+            "verified_via": "docs.rs",
+            "taint_role": "custom actix-web auth extractor: the actix-web analog to axum's FromRequestParts (see axum-extractors below). Apps that don't pull in a dedicated auth crate hand-roll their guard as `impl FromRequest for MyAuthedUser`, decoding a bearer/session header inside `from_request`. Matched as a trait-impl definition site (heuristically gated on an auth-flavored signal in the impl body -- same keyword table and code path as axum-extractors), not a function call."
+        }
+    ],
+
+    "custom-authz-module": [
+        {
+            "fn_name": "db::authz::get_permissions",
+            "category": "authorization",
+            "return_type": "Result<Rbac, TokioPostgresError>",
+            "parameter_type": ["&Transaction", "&Authentication", "i32"],
+            "verified_via": "manual",
+            "taint_role": "App-specific (bionic-gpt) but a common naming convention (an `authz` module's `get_permissions`) worth cataloging as a worked example: loads the caller's RBAC permission set for a team and, critically, also sets the Postgres `row_level_security.user_id` session variable that every RLS policy in the schema keys off (via the private `set_rls_and_encryption_keys` helper it calls internally). The source's own comment calls this out: 'Important, this does the IDOR for all requests with a team. Do not remove.' Caught by the existing generic direct/type-method matchers -- no scanner code changes needed, just a catalogue entry (see 'Adding a new library' in AC_FINDER.md)."
+        },
+        {
+            "fn_name": "db::authz::get_permisisons",
+            "category": "authorization",
+            "return_type": "Result<(Rbac, i32), TokioPostgresError>",
+            "parameter_type": ["&Transaction", "&Authentication", "&str"],
+            "verified_via": "manual",
+            "taint_role": "Sic -- a real typo in bionic-gpt's own source (missing an 's'), not a mistake in this catalogue. Thin wrapper around get_permissions that resolves a public team id first."
+        },
+        {
+            "fn_name": "db::authz::set_row_level_security_user_id",
+            "category": "authorization",
+            "return_type": "Result<i32, TokioPostgresError>",
+            "parameter_type": ["&Transaction", "String"],
+            "verified_via": "manual",
+            "taint_role": "Direct RLS user-id setter used by code paths (tool-runtime, background jobs) that establish per-user DB scoping without going through the full team-scoped get_permissions."
+        }
+    ],
+
+    "outbound-credential-header": [
+        {
+            "fn_name": "reqwest::RequestBuilder::header",
+            "category": "authentication",
+            "return_type": "RequestBuilder",
+            "parameter_type": ["K", "V"],
+            "verified_via": "docs.rs",
+            "taint_role": "Attaches a credential to an outbound request when the header name is a known auth header (Authorization, x-api-key, api-key, x-goog-api-key, ...) -- the pattern an app uses to authenticate *itself* as a client to a downstream API (e.g. an LLM provider). See src/ac_hints.rs AUTH_HEADER_NAMES for the full table; find_ac_points_src only (a definite header-name match, not a call-shape catalogue entry)."
+        },
+        {
+            "fn_name": "reqwest::RequestBuilder::bearer_auth",
+            "category": "authentication",
+            "return_type": "RequestBuilder",
+            "parameter_type": ["T"],
+            "verified_via": "docs.rs",
+            "taint_role": "reqwest's typed convenience method for attaching a Bearer credential; same outbound-authentication role as a manual Authorization header."
+        },
+        {
+            "fn_name": "reqwest::RequestBuilder::basic_auth",
+            "category": "authentication",
+            "return_type": "RequestBuilder",
+            "parameter_type": ["U", "Option<P>"],
+            "verified_via": "docs.rs",
+            "taint_role": "reqwest's typed convenience method for attaching HTTP Basic credentials."
+        },
+        {
+            "fn_name": "HeaderMap::insert",
+            "category": "authentication",
+            "return_type": "Option<V>",
+            "parameter_type": ["K", "V"],
+            "verified_via": "general-knowledge",
+            "taint_role": "The non-reqwest analog of RequestBuilder::header above: attaches a credential by inserting directly into a header map/HashMap when the header name is a known auth header, for HTTP clients built by hand instead of via reqwest's builder chain (e.g. opentelemetry-otlp's SpanExporter::builder().with_headers(map)). find_ac_points_src only, and additionally gated on the receiver identifier containing \"header\" (e.g. `headers.insert(...)`, `header_map.insert(...)`) on top of the header-name match, since plain `.insert(` is far too generic a method name (HashMap/BTreeMap/Vec/DB rows/...) to gate on the string literal alone the way `.header(` can."
+        },
+        {
+            "fn_name": "reqwest::RequestBuilder::query",
+            "category": "authentication",
+            "return_type": "RequestBuilder",
+            "parameter_type": ["T"],
+            "verified_via": "docs.rs",
+            "taint_role": "The URL-query-string sibling of RequestBuilder::header above: attaches a credential as a `?key=...`/`?access_token=...` query parameter instead of a header -- the pattern the Gemini Developer API (and some other vendor-less-SDK REST APIs) uses. See src/ac_hints.rs AUTH_QUERY_PARAM_NAMES for the full table and its higher false-positive-risk note (\"key\" alone is a much more generic word than anything in AUTH_HEADER_NAMES). find_ac_points_src only, and scans the whole `.query(...)` call's argument list (commonly a param list/map carrying several params at once) rather than one string per call the way `.header(...)` is."
+        }
+    ],
+
+    "inbound-credential-header": [
+        {
+            "fn_name": "HeaderMap::get",
+            "category": "authentication",
+            "return_type": "Option<&HeaderValue>",
+            "parameter_type": ["K"],
+            "verified_via": "general-knowledge",
+            "taint_role": "The inbound analog of outbound-credential-header: reads a credential directly out of an *incoming* request's header map (axum's `Parts::headers` / `HeaderMap`, actix-web's `HttpRequest::headers()`) via a hand-rolled `.get(\"Authorization\")`/`.get(\"x-api-key\")` check, rather than a structured extractor (`impl FromRequestParts`, `TypedHeader<Authorization<Bearer>>`) -- e.g. bionic-gpt's crates/web-server/handlers/api_pipeline.rs, which checks a Bearer API key pulled from `headers.get(\"Authorization\")` against the database. find_ac_points_src only, and additionally gated on the receiver identifier containing \"header\" (e.g. `headers.get(...)`, `parts.headers.get(...)`) or the `.headers().get(...)` method-call chain (actix-web's `HttpRequest::headers()`), on top of the header-name match, since plain `.get(` is far too generic a method name (HashMap/Option/Vec/...) to gate on the string literal alone the way `.header(` can."
         }
     ],
 

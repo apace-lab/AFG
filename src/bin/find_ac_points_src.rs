@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = AcRsScanOptions {
         all_http_calls: args.all_http_calls,
         include_target_dir: args.include_target_dir,
+        ..Default::default()
     };
 
     let matches = scan_ac_rs_path(&args.src, &sigs, &opts)

@@ -66,13 +66,23 @@ fn assert_contains_pair(pairs: &[(String, String)], library: &str, strategy: &st
 }
 
 /// `examples/ac_demo_mir.txt` -- hand-written MIR-shaped text (not a real
-/// RUPTA dump) exercising every AC library, every category, and all 3 MIR
-/// match strategies (`direct`, `angle-bracket`, `short-name`) in one file.
+/// RUPTA dump) exercising every AC library that applies to MIR call-shape
+/// matching (see the file's own header comment for the two libraries that
+/// don't), every category, and all 3 MIR match strategies (`direct`,
+/// `angle-bracket`, `short-name`) in one file.
 #[test]
 fn ac_demo_mir_matches_worked_example() {
     let report = run(env!("CARGO_BIN_EXE_find_ac_points"), &["--mir", "examples/ac_demo_mir.txt"]);
-    assert_eq!(report["total_matches"], 15);
-    assert_eq!(report["signatures_loaded"], 25);
+    assert_eq!(report["total_matches"], 16);
+    // 42 loaded, but the 4 "attribute"-kind actix-web-grants entries
+    // (proc-macro guards) are skipped by this scanner -- they expand away
+    // before MIR codegen -- and "outbound-credential-header" (which now
+    // includes HeaderMap::insert and RequestBuilder::query alongside
+    // RequestBuilder::header) plus "inbound-credential-header"
+    // (HeaderMap::get) are excluded wholesale (see the comment on
+    // scan_ac_mir), so total_matches above doesn't move even though
+    // yup-oauth2's and HeaderMap::get's entries are loadable.
+    assert_eq!(report["signatures_loaded"], 42);
 
     let pairs = lib_strategy_pairs(&report);
     assert_contains_pair(&pairs, "actix-web-httpauth", "direct");
@@ -88,6 +98,7 @@ fn ac_demo_mir_matches_worked_example() {
     assert_contains_pair(&pairs, "oauth2", "direct");
     assert_contains_pair(&pairs, "bcrypt", "direct");
     assert_contains_pair(&pairs, "argon2", "direct");
+    assert_contains_pair(&pairs, "custom-authz-module", "direct");
 
     // find_ac_points has no --all-http-calls suppression -- both the hinted
     // (introspect_token) and unhinted (ping_health) raw-http-authz calls are
@@ -111,17 +122,23 @@ fn ac_demo_mir_matches_worked_example() {
 
 /// `examples/src/ac_demo.rs` -- exercises every AC library, category, and
 /// source-scan match strategy (`direct`, `method`, `short-name`,
-/// `type-method`, `http+path-hint`/`http-call-only`) that `find_ac_points_src`
-/// supports.
+/// `type-method`, `trait-impl`, `type-usage`, `http-auth-header`,
+/// `http+path-hint`/`http-call-only`) that `find_ac_points_src` supports.
 #[test]
 fn ac_demo_src_matches_worked_example() {
     let report = run(env!("CARGO_BIN_EXE_find_ac_points_src"), &["--src", "examples/src/ac_demo.rs"]);
-    assert_eq!(report["total_matches"], 11);
-    assert_eq!(report["signatures_loaded"], 25);
+    // 28, not 26: the axum/actix-web custom extractors' own bodies each read
+    // an inbound "Authorization" header to build their auth guard, which is
+    // now caught by the new inbound-credential-header pattern (see
+    // ac_demo.rs's from_request_parts/from_request functions) alongside
+    // everything already covered here.
+    assert_eq!(report["total_matches"], 28);
+    assert_eq!(report["signatures_loaded"], 42);
 
     let pairs = lib_strategy_pairs(&report);
     assert_contains_pair(&pairs, "actix-web-httpauth", "type-method");
     assert_contains_pair(&pairs, "actix-web-grants", "method");
+    assert_contains_pair(&pairs, "actix-web-grants", "attribute");
     assert_contains_pair(&pairs, "actix-identity", "method");
     assert_contains_pair(&pairs, "axum-login", "method");
     assert_contains_pair(&pairs, "tower-http-auth", "type-method");
@@ -131,6 +148,22 @@ fn ac_demo_src_matches_worked_example() {
     assert_contains_pair(&pairs, "oso", "method");
     assert_contains_pair(&pairs, "biscuit-auth", "method");
     assert_contains_pair(&pairs, "raw-http-authz", "http+path-hint");
+    // ldap3 fires twice on the same call -- see the comment on ldap_login in
+    // examples/src/ac_demo.rs for why that's expected, not a bug.
+    assert_contains_pair(&pairs, "ldap3", "method");
+    assert_contains_pair(&pairs, "oauth2", "method");
+    assert_contains_pair(&pairs, "yup-oauth2", "type-method");
+    assert_contains_pair(&pairs, "bcrypt", "direct");
+    assert_contains_pair(&pairs, "argon2", "method");
+    assert_contains_pair(&pairs, "axum-extractors", "trait-impl");
+    assert_contains_pair(&pairs, "axum-extractors", "type-usage");
+    assert_contains_pair(&pairs, "actix-web-extractors", "trait-impl");
+    assert_contains_pair(&pairs, "custom-authz-module", "type-method");
+    assert_contains_pair(&pairs, "outbound-credential-header", "http-auth-header");
+    assert_contains_pair(&pairs, "outbound-credential-header", "method");
+    assert_contains_pair(&pairs, "outbound-credential-header", "header-map-insert");
+    assert_contains_pair(&pairs, "outbound-credential-header", "query-param-auth");
+    assert_contains_pair(&pairs, "inbound-credential-header", "inbound-auth-header");
 }
 
 /// `ping_health`'s unhinted `.send()` is suppressed by default, but shows up
@@ -155,8 +188,8 @@ fn ac_demo_src_all_http_calls_adds_one_more_match() {
 #[test]
 fn ac_demo_js_matches_worked_example() {
     let report = run(env!("CARGO_BIN_EXE_find_ac_points_js"), &["--src", "examples/src/ac_demo_js.ts"]);
-    assert_eq!(report["total_matches"], 16);
-    assert_eq!(report["signatures_loaded"], 39);
+    assert_eq!(report["total_matches"], 17);
+    assert_eq!(report["signatures_loaded"], 40);
 
     let pairs = lib_strategy_pairs(&report);
     assert_contains_pair(&pairs, "passport", "call+import");
@@ -229,7 +262,7 @@ function requireRole(role) {
 fn ac_demo_llvm_matches_worked_example() {
     let report = run(env!("CARGO_BIN_EXE_find_ac_points_llvm"), &["--ir", "examples/ac_demo_llvm.ll"]);
     assert_eq!(report["total_matches"], 3);
-    assert_eq!(report["signatures_loaded"], 25);
+    assert_eq!(report["signatures_loaded"], 34);
 
     let pairs = lib_strategy_pairs(&report);
     assert_contains_pair(&pairs, "jsonwebtoken", "direct");
