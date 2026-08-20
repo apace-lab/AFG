@@ -374,9 +374,11 @@ mod tests {
     use super::*;
 
     fn datasets_path() -> &'static Path {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("datasets")
-            .leak()
+        Box::leak(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("datasets")
+                .into_boxed_path(),
+        )
     }
 
     fn opts() -> ScanOptions {

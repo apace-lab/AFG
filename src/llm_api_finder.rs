@@ -12,6 +12,12 @@ use std::sync::LazyLock;
 pub struct Signature {
     pub library: String,
     pub fn_name: String,
+    /// "llm-api-prompt" (building/assembling the request that will be sent --
+    /// message/content builders, request builders) | "llm-api-chat" (the
+    /// outbound call that actually sends the assembled request to the LLM
+    /// service) | "unspecified" (missing from the catalog entry -- predates
+    /// this split; treat as "llm-api-chat", every such entry is that kind).
+    pub category: String,
     pub return_type: String,
     pub parameter_type: Vec<String>,
 }
@@ -28,6 +34,8 @@ pub struct CallSite {
 pub struct ApiMatch {
     pub library: String,
     pub fn_name: String,
+    /// Copied from the matching `Signature::category` -- see its doc comment.
+    pub category: String,
     pub match_strategy: String,
     pub callsite: CallSite,
     pub raw_line: String,
@@ -63,6 +71,11 @@ pub fn load_signatures(datasets_path: &Path) -> Result<Vec<Signature>, Box<dyn s
             if fn_name.is_empty() {
                 continue;
             }
+            let category = entry
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unspecified")
+                .to_string();
             let return_type = entry
                 .get("return_type")
                 .and_then(|v| v.as_str())
@@ -81,6 +94,7 @@ pub fn load_signatures(datasets_path: &Path) -> Result<Vec<Signature>, Box<dyn s
             sigs.push(Signature {
                 library: lib_name.clone(),
                 fn_name,
+                category,
                 return_type,
                 parameter_type,
             });
@@ -245,6 +259,7 @@ pub fn scan_mir(mir_content: &str, sigs: &[Signature]) -> Vec<ApiMatch> {
                     matches.push(ApiMatch {
                         library: sig.library.clone(),
                         fn_name: sig.fn_name.clone(),
+                        category: sig.category.clone(),
                         match_strategy: matcher.strategy.to_string(),
                         callsite: CallSite {
                             func_id: current_func_id.clone(),
@@ -287,7 +302,7 @@ mod tests {
         include_str!("../examples/genai_mir.txt");
 
     fn datasets_path() -> &'static Path {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("datasets").leak()
+        Box::leak(Path::new(env!("CARGO_MANIFEST_DIR")).join("datasets").into_boxed_path())
     }
 
     // ── Helper: build a minimal Signature for inline MIR tests ───────────────
@@ -296,6 +311,7 @@ mod tests {
         Signature {
             library: library.to_string(),
             fn_name: fn_name.to_string(),
+            category: "llm-api-chat".to_string(),
             return_type: String::new(),
             parameter_type: vec![],
         }
@@ -399,47 +415,54 @@ fn run_ollama_chat() -> () {
 
     #[test]
     fn detects_gemini_rust() {
+        // Names below match the real gemini-rust API (2026-08 IR-verification
+        // pass, see LLM_API_IR_VERIFICATION.md) -- the crate's actual builder
+        // type is `ContentBuilder`, not `GenerateContentBuilder`; there is no
+        // `Conversation` type or `send_message` method anywhere in the crate.
         const MIR: &str = r#"
 [FuncId(1) - "my_app::run_gemini"]
 fn run_gemini() -> () {
     let _0: ();
     let _1: gemini_rust::Gemini;
-    let _2: gemini_rust::GenerateContentBuilder;
-    let _3: std::result::Result<(), ()>;
+    let _2: gemini_rust::ContentBuilder;
+    let _3: std::result::Result<gemini_rust::GenerationResponse, gemini_rust::ClientError>;
 
     bb0: {
         _2 = gemini_rust::Gemini::generate_content(move _1) -> [return: bb1, unwind continue];
     }
     bb1: {
-        _3 = gemini_rust::GenerateContentBuilder::execute(move _2) -> [return: bb2, unwind continue];
+        _3 = gemini_rust::ContentBuilder::execute(move _2) -> [return: bb2, unwind continue];
     }
     bb2: { return; }
 }
-[FuncId(2) - "my_app::run_gemini_convo"]
-fn run_gemini_convo() -> () {
+[FuncId(2) - "my_app::run_gemini_stream"]
+fn run_gemini_stream() -> () {
     let _0: ();
-    let _1: gemini_rust::Conversation;
-    let _2: std::result::Result<(), ()>;
+    let _1: gemini_rust::ContentBuilder;
+    let _2: std::result::Result<gemini_rust::GenerationStream, gemini_rust::ClientError>;
 
     bb0: {
-        _2 = gemini_rust::Conversation::send_message(move _1, const "hello") -> [return: bb1, unwind continue];
+        _2 = gemini_rust::ContentBuilder::execute_stream(move _1) -> [return: bb1, unwind continue];
     }
     bb1: { return; }
 }
 "#;
         let sigs = vec![
             sig("gemini-rust", "gemini_rust::Gemini::generate_content"),
-            sig("gemini-rust", "gemini_rust::GenerateContentBuilder::execute"),
-            sig("gemini-rust", "gemini_rust::Conversation::send_message"),
+            sig("gemini-rust", "gemini_rust::ContentBuilder::execute"),
+            sig("gemini-rust", "gemini_rust::ContentBuilder::execute_stream"),
         ];
         let matches = scan_mir(MIR, &sigs);
         let fns: Vec<_> = matches.iter().map(|m| m.fn_name.as_str()).collect();
         assert!(fns.contains(&"gemini_rust::Gemini::generate_content"), "missed generate_content");
         assert!(
-            fns.contains(&"gemini_rust::GenerateContentBuilder::execute"),
+            fns.contains(&"gemini_rust::ContentBuilder::execute"),
             "missed execute"
         );
-        assert!(fns.contains(&"gemini_rust::Conversation::send_message"), "missed send_message");
+        assert!(
+            fns.contains(&"gemini_rust::ContentBuilder::execute_stream"),
+            "missed execute_stream"
+        );
     }
 
     // ── anthropic-sdk: inline MIR snippet ────────────────────────────────────
@@ -449,14 +472,17 @@ fn run_gemini_convo() -> () {
         // Builder-chain shape: Client::new(key).messages().model(...).build()?
         // then .execute(callback). Only the final Request::execute call is
         // what the signature matches against.
+        // anthropic_sdk has no dedicated error type -- it uses anyhow::Error
+        // throughout (2026-08 IR-verification pass corrected the prior guess
+        // of `anthropic_sdk::AnthropicError`, which doesn't exist).
         const MIR: &str = r#"
 [FuncId(1) - "my_app::run_anthropic"]
 fn run_anthropic() -> () {
     let _0: ();
     let _1: anthropic_sdk::RequestBuilder;
-    let _2: std::result::Result<anthropic_sdk::Request, anthropic_sdk::AnthropicError>;
+    let _2: std::result::Result<anthropic_sdk::Request, anyhow::Error>;
     let _3: anthropic_sdk::Request;
-    let _4: std::result::Result<(), anthropic_sdk::AnthropicError>;
+    let _4: std::result::Result<(), anyhow::Error>;
 
     bb0: {
         _2 = anthropic_sdk::RequestBuilder::build(move _1) -> [return: bb1, unwind continue];

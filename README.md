@@ -2,26 +2,27 @@
 
 [![CI](https://github.com/apace-lab/AFG/actions/workflows/ci.yml/badge.svg)](https://github.com/apace-lab/AFG/actions/workflows/ci.yml)
 
-Access Flow Guard (AFG) is a framework for detecting cross-user data leaks in
-multi-user Rust programs, in particular LLM-powered applications that share
-caches, databases, or other global state across user sessions.
+Access Flow Guard (AFG) detects cross-user data leaks in multi-user Rust
+programs — in particular LLM-powered apps that share caches, databases, or
+other global state across user sessions.
 
+It also ships a family of standalone scanners that find every LLM API call
+and every access-control (auth) check in a codebase, Rust or JS/TS, with or
+without a full program analysis.
 
-## What it does
+## What's in this repo
 
-AFG is structured in four stages. This repository currently implements the
-first two.
-
-Stage 1, MUMP (Multi-User, Multi-Permission), tags each user's input with a
-distinct origin marker. The mapping from user identity to MIR source is given
-in a JSON config.
-
-Stage 2, STPA (Scoped Taint Pointer Analysis), propagates origin tags through
-the pointer assignment graph to a fixed point and reports every abstract
-object reached by two or more distinct users. These are the cross-user
-overlap sites.
-
-
+| Binary | Scans | Docs |
+|---|---|---|
+| `afg` | A RUPTA points-to dump, for cross-user overlap (the main tool — see below) | this file |
+| `find_llm_calls` | Rust MIR dump, for LLM API calls | [LLM_API_FINDER.md](src/LLM_API_FINDER.md) |
+| `find_llm_calls_js` | JS/TS source, for LLM API calls | [LLM_API_FINDER_JS.md](src/LLM_API_FINDER_JS.md) |
+| `find_llm_calls_all` | Both of the above, merged | [LLM_API_FINDER_JS.md](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all) |
+| `find_ac_points` | Rust MIR dump, for access-control calls | [AC_FINDER.md](src/AC_FINDER.md) |
+| `find_ac_points_src` | Rust source directly, for access-control calls | [AC_FINDER.md](src/AC_FINDER.md) |
+| `find_ac_points_js` | JS/TS source, for access-control calls | [AC_FINDER_JS.md](src/AC_FINDER_JS.md) |
+| `find_ac_points_all` | Any combination of the three above, merged | [AC_FINDER.md](src/AC_FINDER.md) |
+| `find_ac_points_llvm` | Real LLVM IR (`.ll`/`.bc`), for access-control calls — opt-in, needs LLVM installed | [AC_FINDER.md](src/AC_FINDER.md#scanning-real-llvm-ir) |
 
 ## Build
 
@@ -29,140 +30,53 @@ overlap sites.
 cargo build --release
 ```
 
-Stable Rust. Dependencies: `serde`, `serde_json`, `clap`, `regex`, `walkdir`.
-Produces eight binaries in `target/release/`, plus a ninth
-(`find_ac_points_llvm`) if you opt into the `llvm-ir-scan` feature — see its
-entry below:
-
-- `afg` — the MUMP/STPA overlap detector (this section).
-- `find_llm_calls` — scans a RUPTA MIR dump for LLM API call sites. See
-  [`src/LLM_API_FINDER.md`](src/LLM_API_FINDER.md).
-- `find_llm_calls_js` — scans JS/TS source for LLM API call sites. See
-  [`src/LLM_API_FINDER_JS.md`](src/LLM_API_FINDER_JS.md).
-- `find_llm_calls_all` — runs both of the above and merges the output. See
-  [Running both scans
-  together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
-- `find_ac_points` — scans a RUPTA MIR dump for access-control (authn/authz)
-  call sites. See [`src/AC_FINDER.md`](src/AC_FINDER.md).
-- `find_ac_points_src` — scans Rust source directly for access-control call
-  sites, no MIR dump required. See [`src/AC_FINDER.md`](src/AC_FINDER.md).
-- `find_ac_points_js` — scans JS/TS source for access-control call sites. See
-  [`src/AC_FINDER_JS.md`](src/AC_FINDER_JS.md).
-- `find_ac_points_all` — runs `find_ac_points`, `find_ac_points_src`,
-  `find_ac_points_js`, and (with `--features llvm-ir-scan`)
-  `find_ac_points_llvm`, merging the output.
-- `find_ac_points_llvm` — scans a real LLVM IR module (`.ll`/`.bc`) for
-  access-control call sites, using the [`llvm-ir`](https://github.com/cdisselkoen/llvm-ir)
-  crate. Opt-in only — `cargo build --release --features llvm-ir-scan` — since
-  it needs a real LLVM installation at build time, unlike every other binary
-  here. See [`src/AC_FINDER.md`](src/AC_FINDER.md#scanning-real-llvm-ir).
-
-### Convenience wrapper: `scripts/ac_finder.sh`
-
-[`scripts/ac_finder.sh`](scripts/ac_finder.sh) is a single dispatcher over the
-five `find_ac_points*` binaries above, so you don't have to remember which
-binary name goes with which target — pick a mode and it runs `cargo run
---release` for you:
+Stable Rust. Produces every binary above except `find_ac_points_llvm`, which
+needs a separate opt-in build (see its doc link above):
 
 ```sh
-scripts/ac_finder.sh mir    --mir examples/demo_mir.txt      # find_ac_points
-scripts/ac_finder.sh rs-src --src src/                        # find_ac_points_src
-scripts/ac_finder.sh js     --src frontend/src                # find_ac_points_js
-scripts/ac_finder.sh llvm   --ir examples/ac_demo_llvm.ll     # find_ac_points_llvm
-scripts/ac_finder.sh all    --mir dump.txt --rs-src src/ --src frontend/src  # find_ac_points_all
+cargo build --release --features llvm-ir-scan
 ```
 
-Everything after `<mode>` is forwarded verbatim to that binary's own `clap`
-CLI, so every flag documented above (`--out`, `--datasets`,
-`--all-http-calls`, `--include-node-modules`, `--include-target-dir`, ...)
-works unchanged, and `scripts/ac_finder.sh <mode> --help` prints that
-binary's real `--help`. `llvm` mode, and `all` whenever `--llvm-ir` is
-passed, automatically add `--features llvm-ir-scan` — still requires LLVM
-installed as described above. Run `scripts/ac_finder.sh` with no arguments
-for the full usage text.
+### Convenience wrappers
 
-### Convenience wrapper: `scripts/llm_api_finder.sh`
-
-[`scripts/llm_api_finder.sh`](scripts/llm_api_finder.sh) is the same kind of
-dispatcher, over the three `find_llm_calls*` binaries:
+Three scripts save you from remembering which binary goes with which target:
 
 ```sh
-scripts/llm_api_finder.sh mir --mir examples/demo_mir.txt              # find_llm_calls
-scripts/llm_api_finder.sh js  --src frontend/src                        # find_llm_calls_js
-scripts/llm_api_finder.sh all --mir examples/demo_mir.txt --src frontend/src  # find_llm_calls_all
+scripts/ac_finder.sh mir --mir dump.txt          # -> find_ac_points
+scripts/ac_finder.sh rs-src --src src/           # -> find_ac_points_src
+scripts/ac_finder.sh js --src frontend/src       # -> find_ac_points_js
+scripts/ac_finder.sh llvm --ir module.ll         # -> find_ac_points_llvm
+scripts/ac_finder.sh all --mir dump.txt --src frontend/src  # -> find_ac_points_all
+
+scripts/llm_api_finder.sh mir --mir dump.txt     # -> find_llm_calls
+scripts/llm_api_finder.sh js --src frontend/src  # -> find_llm_calls_js
+scripts/llm_api_finder.sh all --mir dump.txt --src frontend/src  # -> find_llm_calls_all
+
+scripts/scan_repo.sh https://github.com/some/repo   # clones + runs find_ac_points_all over it
 ```
 
-Same rules as `ac_finder.sh`: everything after `<mode>` is forwarded verbatim
-to that binary's own `clap` CLI (`--out`, `--datasets`, `--all-http-calls`,
-`--include-node-modules`, ...), and `scripts/llm_api_finder.sh <mode> --help`
-prints that binary's real `--help`. No LLVM feature here — the LLM finder has
-no LLVM-IR scanner. Run `scripts/llm_api_finder.sh` with no arguments for the
-full usage text.
+Everything after the mode/target is forwarded to the underlying binary's own
+`--help`-documented flags. Run any script with no arguments for full usage.
 
-### Convenience wrapper: `scripts/scan_repo.sh`
-
-[`scripts/scan_repo.sh`](scripts/scan_repo.sh) runs the AC finder against an
-*entire external repo* in one command — give it a GitHub URL (it clones a
-shallow copy into `repos/`, gitignored) or a local path, and it runs
-`find_ac_points_all` over the whole thing (Rust source + JS/TS source) and
-writes one merged JSON report:
-
-```sh
-scripts/scan_repo.sh https://github.com/traceloop/hub
-scripts/scan_repo.sh https://github.com/bionic-gpt/bionic-gpt --pull
-scripts/scan_repo.sh ../some-local-checkout --name local-app
-scripts/scan_repo.sh https://github.com/foo/bar -- --all-http-calls
-```
-
-Output goes to `ac_matches_<name>.json` at the repo root by default (`--name`
-is derived from the URL/path basename if not given; also gitignored). An
-already-cloned target is reused as-is unless you pass `--pull`. Anything
-after a literal `--` is forwarded to `find_ac_points_all`.
-
-By default this only runs the two purely-syntactic scans (Rust source +
-JS/TS source) — it doesn't build the target, so it can't produce a RUPTA MIR
-dump or an LLVM IR module on its own. If you already have one for the target
-(generated separately), fold it into the same merged report with
-`--mir-dump`/`--llvm-ir`:
-
-```sh
-scripts/scan_repo.sh ../local-checkout --mir-dump ../local-checkout.mir.txt
-scripts/scan_repo.sh ../local-checkout --llvm-ir ../local-checkout.ll   # auto-adds --features llvm-ir-scan
-```
-
-Run `scripts/scan_repo.sh --help` for the full usage text.
-
-## Usage
+## Running `afg` (the overlap detector)
 
 ```sh
 afg --pts <pts_dump> --config <mump_config.json> [--verbose]
 ```
 
-Arguments:
+- `--pts` — points-to dump from `cargo pta -- --dump-pts <path>` (via [RUPTA](https://github.com/rustanlys/rupta))
+- `--config` — a MUMP user config (schema below)
+- `--verbose` — print each user's full reachable set
 
-- `--pts`: Path to the points-to dump produced by
-  `cargo pta -- --dump-pts <path>`.
-- `--config`: Path to a MUMP user config (schema below).
-- `--verbose`: Print each user's full reachable set after the fixed point.
-  Off by default.
-
-## End-to-end example
-
-The `examples/` directory contains a pre-generated points-to dump from the
-AFG demo program and a matching user config. The demo simulates two users
-querying an LLM-style cache backed by a shared `Arc<Mutex<HashMap<String,
-String>>>`, which is the running example in the AFG paper.
-
-Run directly on the included sample:
+### Try it on the bundled demo
 
 ```sh
 cargo build --release
-./target/release/afg \
-    --pts examples/demo_pts.sample.txt \
-    --config examples/mump_config.json
+./target/release/afg --pts examples/demo_pts.sample.txt --config examples/mump_config.json
 ```
 
-Expected output (three overlap nodes, which are the expected leak sites):
+Expected output — three overlap nodes, the leak sites in the AFG paper's demo
+(two users sharing an `Arc<Mutex<HashMap>>` LLM-response cache):
 
 ```
 Representative overlap nodes (STPA-flagged pointers/objects):
@@ -171,30 +85,20 @@ Representative overlap nodes (STPA-flagged pointers/objects):
   FuncId(51)::heap_bb0[5]         [reached by: UserA, UserB] // alloc::str::{impl#4}::to_owned
 ```
 
-Interpretation: the shared `Arc<Mutex<HashMap>>` allocation, the HashMap's
-hashbrown backing storage, and the cached answer `String` are all reachable
-from both users. These are true positives matching the paper's description
-of the leak.
+Each line names an abstract allocation reached by more than one user's
+tainted data — the cache `Arc`/`Mutex`, its `HashMap` backing storage, and
+the cached answer string.
 
-### Regenerating the dump from source
-
-Install [RUPTA](https://github.com/rustanlys/rupta) first. The bundled
-`demo/` directory is the reference Rust program the sample dump was derived
-from. It pins RUPTA's nightly via its own `rust-toolchain.toml`.
+### Regenerating the dump from your own program
 
 ```sh
-cd demo
-cargo pta -- \
-    --entry-func main \
-    --dump-pts /tmp/demo_pts.txt \
-    --dump-call-graph /tmp/demo_cg.dot
+cd demo   # bundled reference program, pins RUPTA's nightly via rust-toolchain.toml
+cargo pta -- --entry-func main --dump-pts /tmp/my_pts.txt
 cd ..
-./target/release/afg --pts /tmp/demo_pts.txt --config examples/mump_config.json
+./target/release/afg --pts /tmp/my_pts.txt --config examples/mump_config.json
 ```
 
-## Config schema
-
-`mump_config.json`:
+### Config schema
 
 ```json
 {
@@ -202,178 +106,61 @@ cd ..
     {
       "id": "UserA",
       "sources": [
-        { "func": "demo::main", "local": 5,  "note": "Arc clone for UserA" },
-        { "func": "demo::main", "local": 7,  "note": "UserA's question string" },
-        { "func": "demo::main", "local": 8,  "note": "\"UserA\" literal" }
-      ]
-    },
-    {
-      "id": "UserB",
-      "sources": [
-        { "func": "demo::main", "local": 10, "note": "Arc clone for UserB" },
-        { "func": "demo::main", "local": 12, "note": "UserB's question string" },
-        { "func": "demo::main", "local": 13, "note": "\"UserB\" literal" }
+        { "func": "demo::main", "local": 5, "note": "Arc clone for UserA" },
+        { "func": "demo::main", "local": 7, "note": "UserA's question string" }
       ]
     }
   ]
 }
 ```
 
-Fields:
+- `users[].id` — arbitrary label, used as the origin tag in the report
+- `users[].sources[].func` — demangled Rust function name exactly as it
+  appears in the points-to dump (e.g. `demo::main`)
+- `users[].sources[].local` — MIR local index inside that function (integer);
+  find these with `cargo pta -- --dump-mir <path>` or `afg --verbose`
+- `users[].sources[].note` — optional, ignored by the tool
 
-- `users[].id`: Arbitrary user label. Used as the origin tag in the report.
-- `users[].sources[].func`: Demangled Rust function name exactly as it appears
-  in the points-to dump (e.g., `demo::main`,
-  `async_openai::chat::Chat::create`). Matching is exact.
-- `users[].sources[].local`: MIR local index inside that function. Integer.
-  Maps to `FuncId(N)::local_M` in RUPTA's dump.
-- `users[].sources[].note`: Optional human-readable comment. Ignored by the
-  tool.
+### Reading the output
 
-To find the right MIR locals for a program:
-
-- Inspect the MIR dump (`cargo pta -- --dump-mir <path>`) and read the local
-  assignments in the function you care about, or
-- Run `afg --verbose` and cross-check the reachable set against the pts dump.
-
-## Output
-
-`afg` prints:
-
-1. A header with input sizes: number of functions, pointer entries, and edges
-   parsed from the pts dump.
-2. The seeds as resolved from the config, annotated with the function name.
-3. Per-user reachable object counts.
-4. Timing: parse time, fixed-point time, and total post-pass time.
-5. The cross-user overlap set, pruned to one representative per projection
-   chain. Each entry is annotated with the Rust function the abstract
-   allocation originated in, for example `alloc::sync::ArcInner<...>`.
-
-Each entry in the overlap set has the form:
+`afg` prints input sizes, the resolved seeds, per-user reachable counts,
+timing, and the cross-user overlap set (pruned to one representative per
+projection chain). Each overlap entry looks like:
 
 ```
 FuncId(N)::<path>  [reached by: UserA, UserB, ...]  // <demangled origin>
 ```
 
-where:
+`FuncId(N)` is a monomorphized function in RUPTA's index; `heap_bb0[K]` is a
+heap allocation at block 0, statement K; `.cast#K`/`.N`/`.index.K` are
+projections (casts, struct fields, array indices). Any object reached by two
+or more user tags is a cross-user overlap — a candidate leak.
 
-- `FuncId(N)` identifies a monomorphized function in RUPTA's index.
-- `heap_bb0[K]` is a heap allocation in that function at block 0, statement
-  K.
-- `.cast#K`, `.N`, and `.index.K` are projections onto casts, struct fields,
-  and array indices. The prefix pruning shows the topmost tainted path for
-  each leak rather than every projection under it.
-- `[reached by: ...]` lists the user origin tags that propagated to this
-  object. Any object with two or more tags is a cross-user overlap.
+<details>
+<summary>How the overlap computation works</summary>
 
-## Algorithm
+For each user `u`, seed the reachable set `R_u` with their config sources,
+then repeatedly follow points-to edges `(src, dst)` — if `src` extends
+(equals, or is a prefix of) anything already in `R_u`, add `dst`. Iterate to
+a fixed point. The overlap set is every object reachable by two or more
+users' `R_u`. Runs in well under a millisecond on the bundled demo (1055
+edges, 2 users).
+</details>
 
-Let the points-to relation be a set of edges `E`. Each edge is a pair
-`(src, dst)` of path strings from the pts dump.
+## The `datasets/` directory
 
-Define the prefix-extension relation: path `p` extends prefix `q` iff
-`p == q` or `p` starts with `q.`. This captures MIR projections, so tagging
-a local `x` automatically tags `x.0`, `x.0.1`, and so on.
+Curated signature catalogues consumed by the finder tools:
 
-For each user `u`, let `S_u` be the set of seed paths from the config.
+| File | Consumed by |
+|---|---|
+| `llm_api_functions.json` | `find_llm_calls` |
+| `llm_api_functions_js.json` | `find_llm_calls_js` |
+| `ac_functions.json` | `find_ac_points`, `find_ac_points_src`, `find_ac_points_llvm` |
+| `ac_functions_js.json` | `find_ac_points_js` |
+| `rust_input_functions.json`, `JsTs_input_functions.json`, `otherlang_input_functions.json` | not yet consumed — reference data for a future MUMP auto-config feature |
 
-Compute the reachable set `R_u`:
-
-1. Initialize `R_u := S_u`.
-2. Repeat: for every edge `(src, dst)` in `E`, if `src` extends any element
-   of `R_u`, insert `dst` into `R_u`.
-3. Stop when `R_u` has no changes in an iteration.
-
-The cross-user overlap is:
-
-```
-O = { o | #{ u : o in R_u } >= 2 }
-```
-
-The report prunes `O` by dropping entries that are projection-extensions of
-another entry in `O` with the same user set. This keeps the output readable
-without losing information, because any projection of an overlap object is
-also an overlap object with the same tag set.
-
-Complexity per iteration is `O(|Users| * |E| * |R_u|)` in the worst case.
-For the AFG demo (1055 edges, 2 users, 6-object reachable sets), the full
-fixed point runs in under 100 microseconds.
-
-
-### Notes on the `datasets/` directory
-
-This directory holds curated signature catalogues, grouped by source project
-or SDK. Some are reference data for a future MUMP feature; others are already
-consumed at runtime by the `find_llm_calls*`/`find_ac_points*` binaries (noted
-per-entry below). The main `afg` tool (MUMP/STPA) does not read any of them.
-
-- `rust_input_functions.json`: user-input entry functions surveyed from
-  popular open-source Rust LPAs. Reference data for a future MUMP feature
-  that auto-generates `mump_config.json` seeds by matching function
-  signatures in a target program against these catalogues — not yet consumed
-  by any tool in this repository.
-- `JsTs_input_functions.json`, `otherlang_input_functions.json`: equivalents
-  for JavaScript/TypeScript and other non-Rust languages. Also not yet
-  consumed.
-- `llm_api_functions.json`: LLM SDK call signatures (async-openai,
-  ollama-rs, gemini-rust, anthropic-sdk, clust, misanthropic, rig-core,
-  genai, etc.). Each entry is annotated with a `verified_via` tag indicating
-  whether the signature was confirmed against upstream crate docs or is
-  still pending verification. Consumed by
-  [`find_llm_calls`](src/LLM_API_FINDER.md), which scans a RUPTA MIR dump for
-  matching call sites.
-- `llm_api_functions_js.json`: the JS/TS equivalent, consumed by
-  [`find_llm_calls_js`](src/LLM_API_FINDER_JS.md), which scans JS/TS source
-  text directly (no MIR/RUPTA step — RUPTA doesn't understand JS) for LLM SDK
-  and raw `fetch`/`axios` call sites. This covers the frontend half of
-  Tauri-style apps where `find_llm_calls` alone would report nothing, because
-  the LLM calls never appear in the compiled Rust binary at all.
-  `find_llm_calls_all` runs `find_llm_calls` and `find_llm_calls_js` together
-  in one pass and merges the output — see [Running both scans
-  together](src/LLM_API_FINDER_JS.md#running-both-scans-together-find_llm_calls_all).
-- `ac_functions.json`: access-control (authn/authz) call signatures —
-  actix-web-httpauth, jsonwebtoken, casbin-rs, oso, biscuit-auth, etc., plus
-  `custom-authz-module` (a worked example of cataloging a target's own
-  in-house authz function — an ordinary call site, so it works in every
-  scanner below) and four patterns that go beyond ordinary call sites:
-  `axum-extractors`/`actix-web-extractors` (hand-rolled `impl
-  FromRequestParts`/`impl FromRequest` auth guards, axum's typed
-  bearer/basic header extraction, and handler-parameter *usage* of an
-  already-defined guard type, e.g. `current_user: Jwt`, wherever it appears
-  in the tree — see AC_FINDER.md's `extractor-param-usage`),
-  `outbound-credential-header` (the app authenticating *itself* to a
-  downstream API via an `Authorization`/`x-api-key`/etc. header —
-  literal or, with lower confidence, a variable header name near an
-  auth-flavored signal elsewhere in the file — or `.bearer_auth(...)`), and
-  `inbound-credential-header` (the mirror image: a hand-rolled check of an
-  *incoming* request's headers, e.g. `headers.get("Authorization")`, instead
-  of a structured extractor) — all four `find_ac_points_src` only, since
-  MIR/LLVM call-shape matching can't safely replicate them without risking
-  false positives (see AC_FINDER.md's Supported libraries table and Known
-  blind spots). Each entry's `verified_via` (how the signature's shape was
-  established — e.g. `general-knowledge`, `docs.rs`, `manual`) is echoed onto
-  every match in the JSON output across all three scanners below, so a
-  consumer can triage speculative matches from verified ones without
-  cross-referencing the catalogue by hand. An entry can also set `"kind":
-  "attribute"` to mark a proc-macro attribute guard (e.g. actix-web-grants'
-  `#[has_permissions(...)]`) rather than a function/method call — see
-  AC_FINDER.md's Known blind spots. Consumed by
-  [`find_ac_points`](src/AC_FINDER.md), which scans a RUPTA MIR dump; by
-  `find_ac_points_src`, which scans Rust source directly (no MIR/RUPTA step
-  needed) for the same call sites plus the `find_ac_points_src`-only patterns
-  above (including `kind: "attribute"` entries), and strips comments before
-  matching so an explanatory code comment can't be mistaken for a real call;
-  and by `find_ac_points_llvm` (opt-in, `--features llvm-ir-scan`), which
-  scans a real LLVM IR module, matching demangled call targets against the
-  same catalogue minus those same four plus any `kind: "attribute"` entries
-  (attributes expand away before codegen, so neither the MIR nor the LLVM-IR
-  scanner has a realistic callee to match).
-- `ac_functions_js.json`: the JS/TS equivalent, consumed by
-  [`find_ac_points_js`](src/AC_FINDER_JS.md), which scans JS/TS source text
-  directly for access-control middleware, guards, and raw HTTP authz calls.
-  `find_ac_points_all` runs all of `find_ac_points`, `find_ac_points_src`,
-  `find_ac_points_js`, and (with `--features llvm-ir-scan`)
-  `find_ac_points_llvm` in one pass and merges the output.
+Add a new library to any of the first four by editing its JSON file — no
+rebuild needed. See each tool's own doc for the entry format.
 
 ## Testing
 
@@ -382,15 +169,11 @@ cargo test --release                          # everything except find_ac_points
 cargo test --release --features llvm-ir-scan  # also exercises find_ac_points_llvm
 ```
 
-[`tests/fixtures.rs`](tests/fixtures.rs) runs each `find_ac_points*` binary
-against the worked-example fixtures referenced throughout the docs above
-(`examples/ac_demo_mir.txt`, `examples/src/ac_demo.rs`,
-`examples/src/ac_demo_js.ts`, `examples/ac_demo_llvm.ll`) and asserts on the
-resulting JSON, so a change that breaks a documented example fails
-`cargo test` instead of silently drifting from what's written down.
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs both commands
-above on every push and pull request against `main`.
+[`tests/fixtures.rs`](tests/fixtures.rs) runs each binary against the worked
+examples in `examples/` and checks the JSON output, so a change that breaks
+a documented example fails `cargo test`. CI runs both commands above on
+every push/PR against `main`.
 
 ## License
 
-Dual licensed under MIT or Apache-2.0 per the bundled `LICENSE` file.
+Dual licensed under MIT or Apache-2.0 — see [`LICENSE`](LICENSE).

@@ -1,6 +1,7 @@
 use afg::ac_finder::load_ac_signatures;
 use afg::ac_finder_llvm::{load_module, scan_ac_llvm, AcLlvmMatch};
 use clap::Parser;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -19,9 +20,12 @@ struct Args {
     #[arg(long)]
     datasets: Option<PathBuf>,
 
-    /// Write results as JSON to this file
-    #[arg(long, default_value = "ac_matches_llvm.json")]
-    out: PathBuf,
+    /// Base directory to write results into. Matches are grouped by
+    /// AcSignature category (authentication | authorization |
+    /// policy-enforcement | raw-http) and each group is written as its own
+    /// JSON file under <out-dir>/<category>/<ir-file-stem>.json.
+    #[arg(long, default_value = "ll_parser/signatures")]
+    out_dir: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,14 +47,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     print_summary(&args.ir.display().to_string(), &matches);
 
-    let result = serde_json::json!({
-        "ir_file": args.ir.display().to_string(),
-        "signatures_loaded": sigs.len(),
-        "total_matches": matches.len(),
-        "matches": matches,
-    });
-    fs::write(&args.out, serde_json::to_string_pretty(&result)?)?;
-    eprintln!("[find_ac_points_llvm] JSON written to {}", args.out.display());
+    let ir_file = args.ir.display().to_string();
+    let ir_stem = args
+        .ir
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "module".to_string());
+
+    let mut by_category: BTreeMap<&str, Vec<&AcLlvmMatch>> = BTreeMap::new();
+    for m in &matches {
+        by_category.entry(m.category.as_str()).or_default().push(m);
+    }
+
+    for (category, cat_matches) in &by_category {
+        let category_dir = args.out_dir.join(category);
+        fs::create_dir_all(&category_dir)?;
+        let out_file = category_dir.join(format!("{ir_stem}.json"));
+        let result = serde_json::json!({
+            "ir_file": ir_file,
+            "category": category,
+            "signatures_loaded": sigs.len(),
+            "total_matches": cat_matches.len(),
+            "matches": cat_matches,
+        });
+        fs::write(&out_file, serde_json::to_string_pretty(&result)?)?;
+        eprintln!("[find_ac_points_llvm] {} {} match(es) written to {}", cat_matches.len(), category, out_file.display());
+    }
+    if by_category.is_empty() {
+        eprintln!("[find_ac_points_llvm] no matches -- nothing written under {}", args.out_dir.display());
+    }
 
     Ok(())
 }

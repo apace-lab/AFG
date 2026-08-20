@@ -19,7 +19,8 @@
 //! version this is pinned to.
 
 use crate::ac_finder::AcSignature;
-use llvm_ir::{Constant, HasDebugLoc, Instruction, Module, Name, Operand};
+use llvm_ir::instruction::Call;
+use llvm_ir::{Constant, HasDebugLoc, Instruction, Module, Name, Operand, Type};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -75,6 +76,18 @@ pub struct AcLlvmMatch {
     /// trustworthy this signature's shape is, for triaging matches without
     /// cross-referencing the catalog by hand.
     pub verified_via: String,
+    /// The callee's actual return type, read directly from the call site's
+    /// `function_ty` in the IR -- not the catalog's hand-written Rust-level
+    /// `AcSignature::return_type`. LLVM IR types (`ptr`, `i32`, `{ ptr, i64
+    /// }`, ...) are lower-level than the Rust source signature they were
+    /// lowered from -- e.g. `Result<TokenData<Claims>, Error>` typically
+    /// erases to a single `ptr`/struct-by-pointer -- but unlike the catalog
+    /// string, this is what the compiler actually emitted for *this*
+    /// module, so it's a ground truth cross-check rather than a guess.
+    pub return_type: String,
+    /// The callee's actual parameter types, in the same "ground truth from
+    /// this module's IR, not the catalog" sense as `return_type` above.
+    pub parameter_type: Vec<String>,
 }
 
 // ── Module loading ───────────────────────────────────────────────────────────────
@@ -238,6 +251,25 @@ fn callee_name(op: &Operand) -> Option<String> {
     }
 }
 
+/// Read a call site's actual return/parameter types straight off its
+/// `function_ty` -- the callee's real declared signature as this module's
+/// compiler emitted it, not the catalog's hand-written `AcSignature`
+/// strings. `Call::function_ty` only exists from LLVM 15 onward (opaque
+/// pointers dropped the pointee-type info that older LLVM stored on the
+/// `function` operand's pointer type itself, so `function_ty` was added as
+/// an explicit field to carry it instead) -- this repo pins the `llvm-ir`
+/// crate to its `llvm-19` feature (see `Cargo.toml`), which always implies
+/// `function_ty` is present, so no cfg/fallback branch is needed here.
+fn call_signature(call: &Call) -> (String, Vec<String>) {
+    match call.function_ty.as_ref() {
+        Type::FuncType { result_type, param_types, .. } => (
+            result_type.to_string(),
+            param_types.iter().map(|ty| ty.to_string()).collect(),
+        ),
+        other => (other.to_string(), Vec::new()),
+    }
+}
+
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
 /// Scan a parsed `Module` for calls matching any of `sigs`. Walks every
@@ -307,6 +339,7 @@ pub fn scan_ac_llvm(module: &Module, sigs: &[AcSignature]) -> Vec<AcLlvmMatch> {
                             // Always None for now -- see the `ac_hint` doc
                             // comment on `AcLlvmMatch` for why.
                             let ac_hint = None;
+                            let (return_type, parameter_type) = call_signature(call);
                             matches.push(AcLlvmMatch {
                                 library: sig.library.clone(),
                                 fn_name: sig.fn_name.clone(),
@@ -323,6 +356,8 @@ pub fn scan_ac_llvm(module: &Module, sigs: &[AcSignature]) -> Vec<AcLlvmMatch> {
                                 demangled_name: demangled.clone(),
                                 ac_hint,
                                 verified_via: sig.verified_via.clone(),
+                                return_type,
+                                parameter_type,
                             });
                             break 'sig;
                         }

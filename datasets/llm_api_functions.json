@@ -3,182 +3,293 @@
         "purpose": "Reference dataset of LLM SDK request-entry functions. STPA treats matching calls as black-box nodes in the PAG: taint flows from inputs to outputs by a summary rule (Item 2) instead of descending into the callee.",
         "usage": "For runtime use, copy entries into an example's taint_config.json under the \"taint\" array. fn_name must match the demangled Rust symbol; return_type and parameter_type are checked by PointerAnalysis::isTaintedFunction (PointerAnalysis.cpp:1892).",
         "match_rule": "demangled(callee) == fn_name AND returnType matches AND parameter_type.size() <= callee.arg_size()",
-        "self_convention": "For methods, the receiver (&self / &mut self) is included as the first entry of parameter_type, matching the convention used in rust_input_functions.json for Tabby's chat/chat_stream."
+        "self_convention": "For methods, parameter_type[0] is \"sret\" when present (see sret_convention below), followed by the receiver (&self / &mut self / self), matching the convention used in rust_input_functions.json for Tabby's chat/chat_stream.",
+        "sret_convention": "\"sret\" is prepended to parameter_type for every llm-api-chat entry whose return_type is Result<T, E> -- RUPTA's PAG models the indirect struct-return slot as a synthetic leading argument, since every response/error type catalogued here is multi-field and passed via a caller-allocated out-pointer rather than in registers. Shifts every real argument's position by one -- this is what request_index/prompt_arg_index below are indexed against.",
+        "category_values": "llm-api-prompt (building/assembling the request that will be sent -- message/content builders, request builders) | llm-api-chat (the outbound call that actually sends the assembled request to the LLM service). Optional per-entry field; entries without it predate this split and should be treated as llm-api-chat (they're all the outbound-call kind).",
+        "request_index": "llm-api-chat entries only: 0-based index into parameter_type of the argument that carries the assembled outbound request (or, for a builder-consuming call like `.execute(self)`, the index of `self` itself). This is the taint sink STPA should treat as \"sent to the LLM\".",
+        "prompt_arg_index_and_role": "llm-api-prompt entries only, and only on methods that actually take prompt/message content (not on plain field setters like `.model()` or on `.build()`, which finalizes already-accumulated state rather than taking new content): prompt_arg_index is the 0-based parameter_type index of the content-bearing argument; prompt_role classifies whose content it is -- \"user\" | \"system\" | \"assistant\" for a builder that constructs exactly one role's message, \"mixed\" for one that takes a whole collection of messages that could span roles (e.g. a Vec<ChatCompletionRequestMessage> batched from more than one place in the caller).",
+        "async_sret_caveat": "Every llm-api-chat entry here is an `async fn` (or a plain fn returning `impl Future`). Two real ABI shapes were confirmed by compiling against actual crates under rustc 1.86.0/LLVM 19.1.7 (2026-08 verification pass), and neither matches the sret_convention's stated rationale literally: (1) most entries (async-openai, ollama-rs, clust, misanthropic, genai, gemini-rust, rig-core) DO get a leading sret slot, but the sret'd value at the call site is the compiler-generated coroutine/future state-machine struct, not literally the Result<T,E> -- the Result only materializes later, as that future's Output, once something actually polls/awaits it. request_index/prompt_arg_index positions are unaffected (the real arguments still shift by one for the same structural reason), so the convention's *mechanics* hold even though its stated *reason* (\"every response/error type is multi-field and passed via a caller-allocated out-pointer\") is technically imprecise for async entries. (2) A plain (non-async_trait, non-async-fn) fn that returns `impl Future<...>` directly -- e.g. reqwest::RequestBuilder::send, or a trait method boxed via #[async_trait] like llm_chain::traits::Executor::execute -- gets NO sret at all when the returned future type is small enough to fit in registers (reqwest: 16 bytes, {i64,ptr}) or is itself a pointer-sized fat pointer (#[async_trait]'s Pin<Box<dyn Future+Send>>, {ptr,ptr}). Both of those entries were corrected to drop the leading \"sret\" and shift request_index down by one. Bottom line: don't assume sret from return_type alone for a new entry -- confirm against real IR, since the ABI depends on how the async fn is implemented (native async fn vs #[async_trait] vs plain fn returning impl Future), not just what it eventually returns."
     },
 
     "async-openai": [
         {
+            "fn_name": "async_openai::types::chat::ChatCompletionRequestUserMessageArgs::content",
+            "category": "llm-api-prompt",
+            "return_type": "&mut ChatCompletionRequestUserMessageArgs",
+            "parameter_type": [
+                "&mut self",
+                "impl Into<ChatCompletionRequestUserMessageContent>"
+            ],
+            "prompt_arg_index": 1,
+            "prompt_role": "user",
+            "verified_via": "docs.rs"
+        },
+        {
+            "fn_name": "async_openai::types::chat::ChatCompletionRequestUserMessageArgs::build",
+            "category": "llm-api-prompt",
+            "return_type": "Result<ChatCompletionRequestUserMessage, OpenAIError>",
+            "parameter_type": [
+                "&self"
+            ],
+            "verified_via": "docs.rs"
+        },
+        {
+            "fn_name": "async_openai::types::chat::CreateChatCompletionRequestArgs::model",
+            "category": "llm-api-prompt",
+            "return_type": "&mut CreateChatCompletionRequestArgs",
+            "parameter_type": [
+                "&mut self",
+                "impl Into<String>"
+            ],
+            "verified_via": "docs.rs"
+        },
+        {
+            "fn_name": "async_openai::types::chat::CreateChatCompletionRequestArgs::messages",
+            "category": "llm-api-prompt",
+            "return_type": "&mut CreateChatCompletionRequestArgs",
+            "parameter_type": [
+                "&mut self",
+                "VALUE: Into<Vec<ChatCompletionRequestMessage>>"
+            ],
+            "prompt_arg_index": 1,
+            "prompt_role": "mixed",
+            "verified_via": "docs.rs"
+        },
+        {
+            "fn_name": "async_openai::types::chat::CreateChatCompletionRequestArgs::build",
+            "category": "llm-api-prompt",
+            "return_type": "Result<CreateChatCompletionRequest, OpenAIError>",
+            "parameter_type": [
+                "&self"
+            ],
+            "verified_via": "docs.rs"
+        },
+        {
             "fn_name": "async_openai::chat::Chat::create",
+            "category": "llm-api-chat",
             "return_type": "Result<CreateChatCompletionResponse, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateChatCompletionRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3)"
         },
         {
             "fn_name": "async_openai::chat::Chat::create_stream",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatCompletionResponseStream, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateChatCompletionRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3)"
         },
         {
             "fn_name": "async_openai::completion::Completions::create",
+            "category": "llm-api-chat",
             "return_type": "Result<CreateCompletionResponse, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateCompletionRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3)"
         },
         {
             "fn_name": "async_openai::completion::Completions::create_stream",
+            "category": "llm-api-chat",
             "return_type": "Result<CompletionResponseStream, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateCompletionRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3)"
         },
         {
             "fn_name": "async_openai::embedding::Embeddings::create",
+            "category": "llm-api-chat",
             "return_type": "Result<CreateEmbeddingResponse, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateEmbeddingRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3)"
         },
         {
-            "fn_name": "async_openai::image::Images::create",
+            "fn_name": "async_openai::image::Images::generate",
+            "category": "llm-api-chat",
             "return_type": "Result<ImagesResponse, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateImageRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3) — corrects the prior fn_name `async_openai::image::Images::create`: as of async-openai 0.41.3 the method is named `generate` (image editing/variation moved to their own `edit`/`create_variation` methods on the same struct). Real IR confirms (sret[1360], self, request) shape, request_index 2."
         },
         {
-            "fn_name": "async_openai::audio::Audio::speech",
+            "fn_name": "async_openai::audio::Speech::create",
+            "category": "llm-api-chat",
             "return_type": "Result<CreateSpeechResponse, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateSpeechRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3) — corrects the prior fn_name `async_openai::audio::Audio::speech`: as of async-openai 0.41.3 `Audio::speech()` only returns a `Speech` sub-client accessor, the actual request is `Speech::create`. Real IR confirms (sret[1344], self, request) shape, request_index 2."
         },
         {
-            "fn_name": "async_openai::audio::Audio::transcribe",
+            "fn_name": "async_openai::audio::Transcriptions::create",
+            "category": "llm-api-chat",
             "return_type": "Result<CreateTranscriptionResponseJson, OpenAIError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CreateTranscriptionRequest"
             ],
-            "verified_via": "context7:/64bit/async-openai"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (async-openai 0.41.3) — corrects the prior fn_name `async_openai::audio::Audio::transcribe`, which no longer exists as of async-openai 0.41.3: `Audio::transcription()` now returns a `Transcriptions` sub-client accessor, the actual request is `Transcriptions::create`. Real IR confirms (sret[1664], self, request) shape, request_index 2."
         }
     ],
 
     "ollama-rs": [
         {
             "fn_name": "ollama_rs::Ollama::generate",
+            "category": "llm-api-chat",
             "return_type": "Result<GenerationResponse, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "GenerationRequest"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         },
         {
             "fn_name": "ollama_rs::Ollama::generate_stream",
+            "category": "llm-api-chat",
             "return_type": "Result<GenerationResponseStream, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "GenerationRequest"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         },
         {
             "fn_name": "ollama_rs::Ollama::send_chat_messages",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatMessageResponse, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "ChatMessageRequest"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         },
         {
             "fn_name": "ollama_rs::Ollama::send_chat_messages_with_history",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatMessageResponse, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "&mut ChatHistory",
                 "ChatMessageRequest"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 3,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         },
         {
             "fn_name": "ollama_rs::Ollama::generate_embeddings",
+            "category": "llm-api-chat",
             "return_type": "Result<GenerateEmbeddingsResponse, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "GenerateEmbeddingsRequest"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         },
         {
             "fn_name": "ollama_rs::coordinator::Coordinator::chat",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatMessageResponse, OllamaError>",
             "parameter_type": [
+                "sret",
                 "&mut self",
                 "Vec<ChatMessage>"
             ],
-            "verified_via": "context7:/pepperoni21/ollama-rs"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (ollama-rs 0.3.6)"
         }
     ],
 
     "clust": [
         {
             "fn_name": "clust::Client::create_a_message",
-            "return_type": "Result<MessagesResponseBody, ApiError>",
+            "category": "llm-api-chat",
+            "return_type": "Result<MessagesResponseBody, MessagesError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "MessagesRequestBody"
             ],
-            "verified_via": "docs.rs:/clust (real crate: unofficial Anthropic/Claude client by mochi-neko, actively maintained)"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (clust 0.9.0) — corrects the prior guess of error type `ApiError`: the real associated error is `MessagesError`, a wrapper enum (ClientError | ApiError | StreamOptionMismatch). Real IR: `declare void @_ZN5clust6client6Client16create_a_message17h5e80981fbf046100E(ptr sret([1592 x i8]) align 8, ptr align 8, ptr align 8)` — confirms sret + request_index 2."
         },
         {
             "fn_name": "clust::Client::create_a_message_stream",
-            "return_type": "Result<impl Stream<Item = Result<MessageChunk, ApiError>>, ApiError>",
+            "category": "llm-api-chat",
+            "return_type": "Result<impl Stream<Item = Result<MessageChunk, StreamError>>, MessagesError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "MessagesRequestBody"
             ],
-            "verified_via": "docs.rs:/clust"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (clust 0.9.0) — corrects the prior guess of `ApiError` in both the outer and inner (Item) error slots: the real types are `MessagesError` (outer) and `StreamError` (inner). Real IR: `declare void @_ZN5clust6client6Client23create_a_message_stream17hb70e3d9689c739c0E(ptr sret([1592 x i8]) align 8, ptr align 8, ptr align 8)` — same 3-param shape as create_a_message, confirms sret + request_index 2 even for the stream variant."
         }
     ],
 
     "rig-core": [
         {
-            "fn_name": "rig::completion::Prompt::prompt",
+            "fn_name": "rig::completion::request::Prompt::prompt",
+            "category": "llm-api-chat",
             "return_type": "Result<String, PromptError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "&str"
             ],
-            "verified_via": "docs.rig.rs/docs/concepts/completion",
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (rig-core 0.16.0 — latest verifiable under this pipeline's toolchain; rig-core 0.17.1 through the latest published 0.41.0 all fail to compile under rustc 1.86.0/LLVM19 due to let-chains, a hard MSRV wall unrelated to this dataset) — corrects the prior fn_name `rig::completion::Prompt::prompt`: missing the `request` module segment (`rig::completion::Prompt` still resolves via glob re-export, but the canonical/mangled-against path is `rig::completion::request::Prompt`). Real IR (monomorphized to Agent<M>): `define void @\"...rig..agent..completion..Agent$LT$M$GT$...as...rig..completion..request..Prompt...6prompt...\"(ptr sret([176 x i8]) align 8 %_0, ptr align 8 %self, ptr align 1 %prompt.0, i64 %prompt.1)` — confirms sret + &self + &str (2-word fat pointer) shape, request_index 2. Note: the sret'd value at this call site is actually the async PromptRequest builder/future object (176 bytes), not an immediate Result -- Result<String,PromptError> is the eventual Output once that future is driven, same async-deferred pattern as async_openai::chat::Chat::create in this file. Also note: as of rig-core 0.41.0 the crate split into a portable rig-core (contracts only) + rig-agent (classic runtime including Prompt/Agent), unified under a `rig` facade crate -- `Prompt` no longer lives in `rig-core` itself in the latest release, though the path catalogued here (pre-split) remains valid for the version range this was verified against.",
             "taint_role": "provider-agnostic entry point; rig-core is a multi-provider framework (Anthropic, OpenAI, Gemini, Cohere, Mistral, xAI, DeepSeek, Groq, Ollama, and more) built on the same CompletionModel trait, so this single signature covers call sites regardless of which provider client backs the Agent"
         },
         {
-            "fn_name": "rig::completion::CompletionModel::completion",
+            "fn_name": "rig::completion::request::CompletionModel::completion",
+            "category": "llm-api-chat",
             "return_type": "Result<CompletionResponse<Self::Response>, CompletionError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "CompletionRequest"
             ],
-            "verified_via": "docs.rig.rs/docs/concepts/completion",
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (rig-core 0.16.0 — same MSRV-wall caveat as Prompt::prompt above) — corrects the prior fn_name `rig::completion::CompletionModel::completion`: missing the `request` module segment, same as Prompt::prompt. Real IR (monomorphized to openai's ResponsesCompletionModel): `define void @\"...rig..providers..openai..responses_api..ResponsesCompletionModel...as...rig..completion..request..CompletionModel...10completion...\"(ptr sret([1456 x i8]) align 8 %_0, ptr align 8 %self, ptr align 8 %request)` — confirms sret + &self + CompletionRequest (passed indirectly despite being logically by-value, since it's large) shape, request_index 2. Same async-deferred sret caveat as Prompt::prompt above -- confirmed the real eventual Result<CompletionResponse<...>,...> (608 bytes) only appears after wrapping the call in futures::executor::block_on.",
             "taint_role": "lower-level trait method implemented per-provider (rig::providers::anthropic, ::openai, ::gemini, etc.); catches direct completion-model usage bypassing the Agent/Prompt wrapper"
         }
     ],
@@ -186,141 +297,165 @@
     "gemini-rust": [
         {
             "fn_name": "gemini_rust::Gemini::generate_content",
-            "return_type": "GenerateContentBuilder",
+            "category": "llm-api-prompt",
+            "return_type": "ContentBuilder",
             "parameter_type": [
                 "&self"
             ],
-            "verified_via": "context7:/flachesis/gemini-rust",
-            "taint_role": "builder-entry; taint actually flows at GenerateContentBuilder::execute/execute_stream — treat either as the black-box point"
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (gemini-rust 2.0.0) — corrects the prior guess of return type `GenerateContentBuilder`: no such type exists in the crate (checked v1.2.3 through 2.0.0 and current main). The real builder type re-exported at crate root is `ContentBuilder`. Real IR: `call void @_ZN11gemini_rust6client6Gemini16generate_content17hae231d64c7d73788E(ptr sret([464 x i8]) align 8 %_0, ptr align 8 %client)`. Also note: as of gemini-rust 1.8.0 this method is `#[deprecated]` in favor of `Gemini::create_interaction()`, but is still present and callable.",
+            "taint_role": "builder-entry; taint actually flows at ContentBuilder::execute/execute_stream -- treat either as the black-box point"
         },
         {
-            "fn_name": "gemini_rust::GenerateContentBuilder::execute",
-            "return_type": "Result<GenerateContentResponse, GeminiError>",
+            "fn_name": "gemini_rust::ContentBuilder::execute",
+            "category": "llm-api-chat",
+            "return_type": "Result<GenerationResponse, ClientError>",
             "parameter_type": [
+                "sret",
                 "self"
             ],
-            "verified_via": "context7:/flachesis/gemini-rust"
+            "request_index": 1,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (gemini-rust 2.0.0) — corrects the prior guess of fn_name `GenerateContentBuilder::execute` (real type is `ContentBuilder`) and return type `Result<GenerateContentResponse, GeminiError>` (real success type is `GenerationResponse`; real error, re-exported at crate root as `pub use client::Error as ClientError`, is `ClientError` -- there is no `GeminiError` in this crate). parameter_type/request_index confirmed correct: `call void @_ZN11gemini_rust10generation7builder14ContentBuilder7execute17h06e69e9ca388ec21E(ptr sret([5616 x i8]) align 8 %_2, ptr align 8 %builder)` -- exactly 2 params (sret, self)."
         },
         {
-            "fn_name": "gemini_rust::GenerateContentBuilder::execute_stream",
-            "return_type": "Result<GenerateContentStream, GeminiError>",
+            "fn_name": "gemini_rust::ContentBuilder::execute_stream",
+            "category": "llm-api-chat",
+            "return_type": "Result<GenerationStream, ClientError>",
             "parameter_type": [
+                "sret",
                 "self"
             ],
-            "verified_via": "context7:/flachesis/gemini-rust"
-        },
-        {
-            "fn_name": "gemini_rust::Conversation::send_message",
-            "return_type": "Result<GenerateContentResponse, GeminiError>",
-            "parameter_type": [
-                "&mut self",
-                "&str"
-            ],
-            "verified_via": "context7:/flachesis/gemini-rust"
+            "request_index": 1,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (gemini-rust 2.0.0) — same corrections as ContentBuilder::execute (fn_name, and real stream alias is `GenerationStream` not `GenerateContentStream`, error is `ClientError` not `GeminiError`). parameter_type/request_index confirmed correct: `call void @_ZN11gemini_rust10generation7builder14ContentBuilder14execute_stream17ha1123a49f6dfc775E(ptr sret([5312 x i8]) align 8 %_2, ptr align 8 %builder)` -- identical 2-param shape to execute."
         }
     ],
 
     "anthropic-sdk": [
         {
             "fn_name": "anthropic_sdk::Request::execute",
-            "return_type": "Result<(), AnthropicError>",
+            "category": "llm-api-chat",
+            "return_type": "Result<(), anyhow::Error>",
             "parameter_type": [
+                "sret",
                 "self",
                 "impl Fn(String) -> Future<Output = ()>"
             ],
-            "verified_via": "github:mixpeal/anthropic-sdk (real crate, crates.io name \"anthropic-sdk\") — builder-style API: Client::new(key).messages().model(...).build()?.execute(callback).await; the callback receives streamed text chunks. Corrects the prior guess of a `.send()` method returning a plain response struct — the real entry point is `.execute()` on the built Request and is streaming-callback-shaped, not request/response-shaped.",
-            "taint_role": "builder-entry; the actual black-box call is `.execute()`, reached only after `.build()?` on the request builder chain"
+            "request_index": 1,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (anthropic-sdk 0.1.5) — corrects the prior guess of error type `AnthropicError`: no such type exists in the crate; it uses `anyhow::Result` throughout (`use anyhow::{anyhow, Context, Result}` in lib.rs). Also corrects the builder-chain description: real construction is `Client::new().auth(key).model(...).messages(&json!(...)).build()?` (flat builder methods on Client returning Self), not `Client::new(key).messages().model(...)`. parameter_type/request_index confirmed correct: `define void @_ZN13anthropic_sdk7Request7execute17hc1da24bbb212fac4E(ptr sret([1936 x i8]) align 8 %_0, ptr align 8 %self, ptr align 8 %callback)` with a capturing callback -- sret(0), self(1), callback(2).",
+            "taint_role": "builder-entry; the actual black-box call is `.execute()`, reached only after `.build()?` on the request builder chain. request_index points at `self` (the built Request) -- that's the assembled outbound payload here, not the callback."
         }
     ],
 
     "misanthropic": [
         {
             "fn_name": "misanthropic::Client::message",
-            "return_type": "Result<Response, Error>",
+            "category": "llm-api-chat",
+            "return_type": "Result<response::Message, Error>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "Prompt"
             ],
-            "verified_via": "docs.rs:/misanthropic — confirmed Client::message(Prompt) and Client::stream(Prompt) as the two request methods; Prompt is a builder supporting messages built from (Role, String) tuples"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.88.0+llvm-20.1.5 (misanthropic 1.0.0-alpha.16) — corrects the prior guess of return type `Response`: the real signature returns just the inner `response::Message` struct (unwrapped from the `Response` enum internally), via `pub type Result<T> = std::result::Result<T, Error>` where `Error` is `misanthropic::client::Error`. NOTE: could not compile under this pipeline's pinned rustc-1.86/LLVM-19 toolchain -- misanthropic's source uses edition-2024 let-chain syntax, which requires rustc >=1.88 regardless of consuming-crate edition; verified under the closest available version instead. parameter_type/request_index confirmed correct: `define void @_ZN12misanthropic6client6Client7message17hc35dfe47d59e54e3E(ptr sret([1280 x i8]) align 8 %_0, ptr align 8 %self, ptr align 8 %prompt)`."
         },
         {
             "fn_name": "misanthropic::Client::stream",
-            "return_type": "Result<ResponseStream, Error>",
+            "category": "llm-api-chat",
+            "return_type": "Result<Stream, Error>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "Prompt"
             ],
-            "verified_via": "docs.rs:/misanthropic"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.88.0+llvm-20.1.5 (misanthropic 1.0.0-alpha.16) — corrects the prior guess of return type `ResponseStream`: the real re-exported type is literally named `Stream` (`pub use stream::Stream;`). Same toolchain-deviation caveat as Client::message above. parameter_type/request_index confirmed correct: `define void @_ZN12misanthropic6client6Client6stream17h4ce88490c55cb10fE(ptr sret([1280 x i8]) align 8 %_0, ptr align 8 %self, ptr align 8 %prompt)`."
         }
     ],
 
     "llm-chain": [
         {
             "fn_name": "llm_chain::traits::Executor::execute",
+            "category": "llm-api-chat",
             "return_type": "Result<Output, ExecutorError>",
             "parameter_type": [
                 "&self",
                 "&Options",
                 "&Prompt"
             ],
-            "verified_via": "docs.rs:/llm-chain/latest/llm_chain/traits/trait.Executor.html — corrects the prior guess of module path `llm_chain::executor::Executor`: the `executor` module only holds the `executor!` construction macro, the trait itself lives in `llm_chain::traits`. execute() is async_trait-boxed (returns a pinned future); Result<Output, ExecutorError> is the future's Output type.",
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (llm-chain 0.13.0, llm-chain-openai 0.13.0) — corrects the prior guess of an sret-prefixed 4-slot signature: real IR (monomorphized to the llm-chain-openai backend) shows `#[async_trait]` boxing returns a register-pair fat pointer `{ptr,ptr}` (Pin<Box<dyn Future<Output = Result<Output, ExecutorError>> + Send>>), not an indirect sret struct-return — the sret_convention only applies when the *immediate* return type is Result<T,E>, which it isn't here. Real declare: `declare { ptr, ptr } @\"_ZN93_$LT$llm_chain_openai..chatgpt..executor..Executor$u20$as$u20$llm_chain..traits..Executor$GT$7execute...\"(ptr align 8, ptr align 8, ptr align 8)` — 3 real params (self=0, options=1, prompt=2), no leading sret slot.",
             "taint_role": "single-step black-box entry point; per-backend executors (llm-chain-openai, llm-chain-llama, etc.) all implement this trait method"
         },
         {
             "fn_name": "llm_chain::chains::sequential::Chain::run",
+            "category": "llm-api-chat",
             "return_type": "Result<Output, SequentialChainError>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "Parameters",
                 "&Executor"
             ],
-            "verified_via": "docs.rs:/llm-chain/latest/llm_chain/chains/sequential/struct.Chain.html — corrects the prior guess of error type `ChainError`; the real associated error is `SequentialChainError`"
+            "request_index": 2,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (llm-chain 0.13.0, llm-chain-openai 0.13.0) — real IR confirms exactly: `define void @_ZN9llm_chain6chains10sequential5Chain3run17h873a73b8e7e580dcE(ptr sret([368 x i8]) align 8 %_0, ptr align 8 %self, ptr align 8 %parameters, ptr align 8 %executor)`; this one IS a plain (non-async_trait) generic async fn, so it keeps the ordinary sret ABI unlike Executor::execute above.",
+            "taint_role": "request_index points at `Parameters` (the template-fill values that become the outbound prompt), not `&Executor` (just the backend reference)"
         }
     ],
 
     "genai": [
         {
             "fn_name": "genai::Client::exec_chat",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatResponse, Error>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "impl Into<ModelSpec>",
                 "ChatRequest",
                 "Option<&ChatOptions>"
             ],
-            "verified_via": "docs.rs:/genai — confirmed via Client::exec_chat docs; model param is generic `impl Into<ModelSpec>` (accepts &str literals, ModelIden, or ServiceTarget) rather than a bare &str, but a plain string literal argument still matches at a call site",
+            "request_index": 3,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (genai 0.3.5; signature/order confirmed unchanged through genai 0.6.5, the latest stable, via source diff — 0.6.x itself won't compile under this pipeline's LLVM19-pinned toolchain since it uses edition-2024 let-chains requiring rustc>=1.88/LLVM20). Real IR confirms sret + 5-slot shape: `declare void @\"...Client...exec_chat...\"(ptr sret([1336 x i8]) align 8, ptr align 8, ptr align 1, i64, ptr align 8, ptr align 8)` (model:&str decomposes to a 2-word fat pointer at the ABI level, but is one Rust-level parameter_type slot per this dataset's convention) — request_index 3 confirmed.",
             "taint_role": "genai is a multi-provider client (OpenAI, Anthropic, Gemini, xAI/Grok, Ollama, Groq, DeepSeek, Cohere, Together, and more) — this single signature covers call sites regardless of which backing provider is targeted"
         },
         {
             "fn_name": "genai::Client::exec_chat_stream",
+            "category": "llm-api-chat",
             "return_type": "Result<ChatStreamResponse, Error>",
             "parameter_type": [
+                "sret",
                 "&self",
                 "impl Into<ModelSpec>",
                 "ChatRequest",
                 "Option<&ChatOptions>"
             ],
-            "verified_via": "docs.rs:/genai"
+            "request_index": 3,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (genai 0.3.5; confirmed unchanged through 0.6.5 via source diff, same caveat as exec_chat above) — identical 5-slot shape confirmed in real IR (`sret([448 x i8])`), request_index 3 confirmed."
         }
     ],
 
     "raw-http-reqwest": [
         {
             "fn_name": "reqwest::RequestBuilder::send",
+            "category": "llm-api-chat",
             "return_type": "Result<Response, reqwest::Error>",
             "parameter_type": [
                 "self"
             ],
-            "verified_via": "ambient",
-            "taint_role": "catch-all for LPAs that call provider HTTP APIs directly without an SDK; narrower match should be applied via URL/host predicate once we add that capability to STPA"
+            "request_index": 0,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (reqwest 0.13.4) — corrects the prior guess of an sret-prefixed 2-slot signature: `send()` itself isn't an `async fn`, it's a plain fn returning `impl Future<...>` directly, and that concrete future type is only 16 bytes, so it's returned in two registers (`{i64, ptr}`) with no indirect sret slot at all. Real IR: `declare { i64, ptr } @_ZN7reqwest10async_impl7request14RequestBuilder4send(ptr align 8)` -- only `self`, at index 0. `Result<Response, Error>` is what the *awaited* future yields, not send()'s own return type, so the dataset's blanket sret_convention (applies whenever return_type is Result<T,E>) doesn't hold for this entry -- real signature has to be checked case by case for plain fns returning `impl Future`.",
+            "taint_role": "catch-all for LPAs that call provider HTTP APIs directly without an SDK; narrower match should be applied via URL/host predicate once we add that capability to STPA. request_index points at `self` (the built HTTP request) -- there's no separate request-struct argument for a raw reqwest call."
         },
         {
             "fn_name": "reqwest::blocking::RequestBuilder::send",
+            "category": "llm-api-chat",
             "return_type": "Result<Response, reqwest::Error>",
             "parameter_type": [
+                "sret",
                 "self"
             ],
-            "verified_via": "ambient",
+            "request_index": 1,
+            "verified_via": "llvm-ir:rustc-1.86.0+llvm-19.1.7 (reqwest 0.13.4) — confirmed as-is: `declare void @...blocking...RequestBuilder4send(ptr sret([176 x i8]) align 8, ptr align 8)`, sret=0, self=1. Unlike the async variant above, the blocking send() really does return Result<Response,Error> directly (176 bytes, indirect via sret), so the sret_convention holds here.",
             "taint_role": "blocking (sync) counterpart to reqwest::RequestBuilder::send; same catch-all role for LPAs using the blocking client"
         }
     ]

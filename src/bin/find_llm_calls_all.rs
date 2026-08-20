@@ -75,8 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for m in &matches {
             let cs = &m.callsite;
             println!(
-                "  Found {} API call ({}) at {} ({}) / {} [line {}]",
-                m.library, m.fn_name, cs.func_id, cs.function, cs.basic_block, cs.line
+                "  Found {} [{}] API call ({}) at {} ({}) / {} [line {}]",
+                m.library, m.category, m.fn_name, cs.func_id, cs.function, cs.basic_block, cs.line
             );
             if let Some(hint) = &m.provider_hint {
                 println!("    provider hint: {hint}");

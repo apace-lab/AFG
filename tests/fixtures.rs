@@ -40,6 +40,64 @@ fn run(bin_exe: &str, args: &[&str]) -> Value {
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("failed to parse JSON from {bin_exe}: {e}"))
 }
 
+/// A unique output directory per call, mirroring `tmp_out` -- used for
+/// `find_ac_points_llvm`, which (unlike the other `find_ac_points*`
+/// binaries) takes `--out-dir` and writes one JSON file per AC category
+/// under it instead of a single `--out` file.
+fn tmp_out_dir(name: &str) -> PathBuf {
+    let base = PathBuf::from(name);
+    let basename = base.file_name().and_then(|n| n.to_str()).unwrap_or(name);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("afg_fixture_test_{}_{}_{}", std::process::id(), basename, n))
+}
+
+/// Runs `find_ac_points_llvm`, then merges the per-category JSON files it
+/// writes under `--out-dir` back into a single report shaped like `run`'s,
+/// so existing assertions (`total_matches`, `signatures_loaded`, `matches`)
+/// keep working across the category split.
+fn run_llvm(bin_exe: &str, args: &[&str]) -> Value {
+    let out_dir = tmp_out_dir(bin_exe);
+    let mut full_args: Vec<&str> = args.to_vec();
+    full_args.push("--out-dir");
+    let out_dir_str = out_dir.to_str().unwrap();
+    full_args.push(out_dir_str);
+
+    let status = Command::new(bin_exe)
+        .args(&full_args)
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run {bin_exe}: {e}"));
+    assert!(status.success(), "{bin_exe} {full_args:?} exited with {status}");
+
+    let mut all_matches: Vec<Value> = Vec::new();
+    let mut signatures_loaded = Value::Null;
+    if out_dir.is_dir() {
+        for category_entry in std::fs::read_dir(&out_dir).unwrap() {
+            let category_dir = category_entry.unwrap().path();
+            if !category_dir.is_dir() {
+                continue;
+            }
+            for file_entry in std::fs::read_dir(&category_dir).unwrap() {
+                let file_path = file_entry.unwrap().path();
+                let content = std::fs::read_to_string(&file_path)
+                    .unwrap_or_else(|e| panic!("failed to read {}: {e}", file_path.display()));
+                let report: Value = serde_json::from_str(&content)
+                    .unwrap_or_else(|e| panic!("failed to parse JSON from {}: {e}", file_path.display()));
+                signatures_loaded = report["signatures_loaded"].clone();
+                if let Some(matches) = report["matches"].as_array() {
+                    all_matches.extend(matches.iter().cloned());
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&out_dir).ok();
+
+    serde_json::json!({
+        "signatures_loaded": signatures_loaded,
+        "total_matches": all_matches.len(),
+        "matches": all_matches,
+    })
+}
+
 /// Extract `(library, match_strategy)` pairs from a report's `matches`
 /// array, order-independent — call order between the call-shape pass and
 /// the bare-reference pass in `find_ac_points_js` isn't a contract worth
@@ -260,9 +318,9 @@ function requireRole(role) {
 #[cfg(feature = "llvm-ir-scan")]
 #[test]
 fn ac_demo_llvm_matches_worked_example() {
-    let report = run(env!("CARGO_BIN_EXE_find_ac_points_llvm"), &["--ir", "examples/ac_demo_llvm.ll"]);
+    let report = run_llvm(env!("CARGO_BIN_EXE_find_ac_points_llvm"), &["--ir", "examples/ac_demo_llvm.ll"]);
     assert_eq!(report["total_matches"], 3);
-    assert_eq!(report["signatures_loaded"], 34);
+    assert_eq!(report["signatures_loaded"], 42);
 
     let pairs = lib_strategy_pairs(&report);
     assert_contains_pair(&pairs, "jsonwebtoken", "direct");

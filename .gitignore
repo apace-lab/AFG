@@ -12,3 +12,6 @@ examples/src/ac_demo_llvm/.build/
 
 # scripts/scan_repo.sh output (per-repo AC-finder scan results)
 /ac_matches_*.json
+
+# find_ac_points_llvm output, grouped by AC category under --out-dir
+/ll_parser/signatures/

@@ -66,8 +66,8 @@ fn print_summary(mir_file: &str, matches: &[ApiMatch]) {
     for m in matches {
         let cs = &m.callsite;
         println!(
-            "  Found {} API call ({}) at {} ({}) / {} [line {}]",
-            m.library, m.fn_name, cs.func_id, cs.function, cs.basic_block, cs.line
+            "  Found {} [{}] API call ({}) at {} ({}) / {} [line {}]",
+            m.library, m.category, m.fn_name, cs.func_id, cs.function, cs.basic_block, cs.line
         );
         if let Some(hint) = &m.provider_hint {
             println!("    provider hint: {hint}");
