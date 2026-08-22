@@ -1,0 +1,7 @@
+[package]
+name = "misanthropic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+misanthropic = "=1.0.0-alpha.16"

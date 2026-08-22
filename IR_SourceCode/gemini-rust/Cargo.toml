@@ -1,0 +1,8 @@
+[package]
+name = "gemini-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gemini-rust = "=2.0.0"
+

@@ -1,0 +1,10 @@
+[package]
+name = "async-openai-ir-scratch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pinned to the exact version this repo's llm_api_functions.json dataset was
+# verified against -- see LLM_API_IR_VERIFICATION.md at the repo root.
+async-openai = { version = "=0.41.3", features = ["chat-completion", "completions", "embedding", "image", "audio"] }
+tokio = { version = "1", features = ["full"] }

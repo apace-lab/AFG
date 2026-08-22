@@ -7,6 +7,10 @@ AC scanner's output layout. Kept separate from the operational docs
 those describe how the tools work today; this is the narrower story of one
 concept — "category" — and how it evolved across the two catalogues.
 
+**Versions used:** rustc 1.86.0, bundling LLVM 19.1.7 — the last rustc release
+before 1.87.0 switched to LLVM 20 (see `rust-toolchain.toml` and
+`LLM_API_IR_VERIFICATION.md`).
+
 ## What changed
 
 ### 1. `find_ac_points_llvm` output reorganized by category
