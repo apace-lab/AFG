@@ -6,7 +6,7 @@
 //! against a curated signature catalogue plus an import-statement check used
 //! to grade confidence), reused almost verbatim.
 
-use crate::ac_hints::find_ac_hint;
+use crate::ac_hints::{find_ac_hint, find_auth_header_hint};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -137,6 +137,74 @@ static RE_HTTP_TRIGGER: LazyLock<Regex> = LazyLock::new(|| {
 /// How many lines before/after an HTTP trigger to search for a path literal.
 const HINT_WINDOW_BEFORE: usize = 6;
 const HINT_WINDOW_AFTER: usize = 2;
+
+// ── Outbound/inbound credential-header detection ────────────────────────────────
+//
+// The JS/TS analog of `ac_finder_rs_src`'s `.header("Authorization", ...)` /
+// `headers.get("Authorization")` scan -- entirely missing until now. Found
+// via a real-world miss scanning chroma-core/chroma: its JS client
+// (`clients/js/packages/chromadb-core/src/auth.ts`) builds genuine
+// credential headers (`Authorization: "Basic " + base64Encode(creds)`,
+// `this.credentials[headerKey] = \`Bearer ${creds}\``) that produced zero
+// matches, because no category here ever looked for header construction at
+// all -- unlike the Rust source scanner, which has had this since
+// `outbound-credential-header`/`inbound-credential-header` were added.
+//
+// JS/TS doesn't share Rust's builder-chain idiom (`.header(name, value)`);
+// headers are typically built as a plain object literal (`{ Authorization:
+// token }`) or via the Fetch API's `Headers.set(name, value)`, so the
+// detection shapes below are JS-native rather than a literal port. Hardcoded
+// here rather than JSON-driven, same as `raw-http-authz` above -- there's no
+// per-call-site catalogue entry to look up, just a header-name gate.
+
+// `{ Authorization: "Bearer " + token }` / `{ "x-api-key": key }` -- an
+// object-literal (or class-field) property whose *key* is a known credential
+// header name. Three alternatives (double-quoted, single-quoted, bareword)
+// captured into three groups since only one can match per occurrence.
+static RE_HEADER_OBJ_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""([A-Za-z][A-Za-z0-9_-]*)"\s*:|'([A-Za-z][A-Za-z0-9_-]*)'\s*:|\b([A-Za-z_][A-Za-z0-9_]*)\b\s*:"#)
+        .unwrap()
+});
+
+// `headers.set("Authorization", token)` (Fetch API `Headers.set`) -- the
+// JS/TS sibling of reqwest's `.header(...)`. `.set(` alone is far too
+// generic a method name (Map/Set/any state setter), so the receiver is
+// additionally required to contain "header" (checked at the call site
+// below), same gate `ac_finder_rs_src` uses for `HeaderMap::insert`.
+static RE_HEADERS_SET_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"([A-Za-z_$][A-Za-z0-9_$.]*)\.set\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+// `this.credentials[headerKey] = headerVal` -- the header *name* is a
+// variable, not a literal, so `RE_HEADER_OBJ_KEY` can't see it. Mirrors
+// `ac_finder_rs_src::RE_HEADER_CALL_DYNAMIC`: gated on the receiver
+// containing "header"/"credential" plus a whole-file auth-flavored signal
+// rather than a literal-name match, so every hit is lower precision and
+// reported as "verify manually" via its `ac_hint`.
+static RE_HEADER_DYNAMIC_ASSIGN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$.]*)\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*=").unwrap());
+
+/// Case-insensitive signals used to gate `RE_HEADER_DYNAMIC_ASSIGN`. Checked
+/// against the whole file, same rationale as
+/// `ac_finder_rs_src::DYNAMIC_HEADER_AUTH_SIGNAL_KEYWORDS`: the code that
+/// determines a dynamic header key's real value is routinely elsewhere in
+/// the file from the assignment that actually applies it.
+const DYNAMIC_HEADER_AUTH_SIGNAL_KEYWORDS: &[&str] =
+    &["bearer", "authoriz", "api_key", "api-key", "apikey", "access_token", "auth_header", "auth_token", "credential"];
+
+fn find_dynamic_header_auth_signal(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    DYNAMIC_HEADER_AUTH_SIGNAL_KEYWORDS.iter().find(|kw| lower.contains(*kw)).copied()
+}
+
+// `request.headers.get("authorization")` (Fetch API `Request`/`Response`) --
+// the inbound analog of `RE_HEADERS_SET_CALL`.
+static RE_HEADERS_GET_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\.headers\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+// `req.headers["authorization"]` (Express/Node-style header map access) --
+// the inbound analog of `RE_HEADER_OBJ_KEY`.
+static RE_HEADERS_BRACKET_ACCESS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\bheaders\s*\[\s*["']([^"']+)["']\s*\]"#).unwrap());
 
 // ── Bare-reference (middleware-by-reference) detection ─────────────────────────
 //
@@ -588,6 +656,7 @@ pub fn scan_ac_js_source(
     let imports = collect_imports(&cleaned);
     let matchers = make_call_matchers(sigs);
     let alias_map = build_alias_map(&cleaned, &matchers, &imports);
+    let dynamic_header_signal = find_dynamic_header_auth_signal(&cleaned);
 
     let lines: Vec<&str> = content.lines().collect();
     let cleaned_lines: Vec<&str> = cleaned.lines().collect();
@@ -673,10 +742,112 @@ pub fn scan_ac_js_source(
                     match_strategy: if hint.is_some() { "http+path-hint" } else { "http-call-only" }
                         .to_string(),
                     callsite: JsAcCallSite { file: file.to_string(), line: lineno },
-                    raw_line,
+                    raw_line: raw_line.clone(),
                     ac_hint: hint,
                 });
             }
+        }
+
+        // ── outbound credential-header attachment via an object-literal key
+        // (`{ Authorization: "Bearer " + token }`) ──
+        for caps in RE_HEADER_OBJ_KEY.captures_iter(cline) {
+            let key = caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3)).map(|m| m.as_str()).unwrap_or("");
+            let Some(desc) = find_auth_header_hint(key) else {
+                continue; // not a known credential header (Content-Type, Accept, ...)
+            };
+            matches.push(JsAcMatch {
+                library: "outbound-credential-header".to_string(),
+                pattern: format!("{{{key}: ...}}"),
+                kind: "credential header built as an object-literal property".to_string(),
+                category: "authentication".to_string(),
+                match_strategy: "header-object-literal".to_string(),
+                callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                raw_line: raw_line.clone(),
+                ac_hint: Some(desc.to_string()),
+            });
+        }
+
+        // ── outbound credential-header attachment via Fetch API's
+        // `Headers.set(name, value)` ──
+        for caps in RE_HEADERS_SET_CALL.captures_iter(cline) {
+            let receiver = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            if !receiver.to_lowercase().contains("header") {
+                continue; // too generic a method name to gate on the header-name literal alone
+            }
+            let header_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let Some(desc) = find_auth_header_hint(header_name) else {
+                continue;
+            };
+            matches.push(JsAcMatch {
+                library: "outbound-credential-header".to_string(),
+                pattern: format!("{receiver}.set(\"{header_name}\")"),
+                kind: "credential header attached via Headers.set()".to_string(),
+                category: "authentication".to_string(),
+                match_strategy: "header-set-call".to_string(),
+                callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                raw_line: raw_line.clone(),
+                ac_hint: Some(desc.to_string()),
+            });
+        }
+
+        // ── same shape, but the header *name* is a variable, not a literal
+        // (`this.credentials[headerKey] = headerVal`) ──
+        if let Some(signal) = dynamic_header_signal {
+            for caps in RE_HEADER_DYNAMIC_ASSIGN.captures_iter(cline) {
+                let receiver = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                let lower = receiver.to_lowercase();
+                if !lower.contains("header") && !lower.contains("credential") {
+                    continue;
+                }
+                let key_expr = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                matches.push(JsAcMatch {
+                    library: "outbound-credential-header".to_string(),
+                    pattern: format!("{receiver}[{key_expr}]"),
+                    kind: "credential header attached via a dynamic property key".to_string(),
+                    category: "authentication".to_string(),
+                    match_strategy: "header-dynamic-assign".to_string(),
+                    callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                    raw_line: raw_line.clone(),
+                    ac_hint: Some(format!(
+                        "dynamic header key (\"{key_expr}\") in a file with an auth-flavored signal (\"{signal}\") -- verify manually"
+                    )),
+                });
+            }
+        }
+
+        // ── inbound credential-header check (`request.headers.get(...)` /
+        // `req.headers["authorization"]`) ──
+        for caps in RE_HEADERS_GET_CALL.captures_iter(cline) {
+            let header_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            if find_auth_header_hint(header_name).is_none() {
+                continue;
+            }
+            matches.push(JsAcMatch {
+                library: "inbound-credential-header".to_string(),
+                pattern: format!("headers.get(\"{header_name}\")"),
+                kind: "credential read from an inbound header via Headers.get()".to_string(),
+                category: "authentication".to_string(),
+                match_strategy: "inbound-auth-header".to_string(),
+                callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                raw_line: raw_line.clone(),
+                ac_hint: Some(format!("credential read from an inbound \"{header_name}\" header")),
+            });
+        }
+        for caps in RE_HEADERS_BRACKET_ACCESS.captures_iter(cline) {
+            let header_name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            if find_auth_header_hint(header_name).is_none() {
+                continue;
+            }
+            matches.push(JsAcMatch {
+                library: "inbound-credential-header".to_string(),
+                pattern: format!("headers[\"{header_name}\"]"),
+                kind: "credential read from an inbound header via bracket access".to_string(),
+                category: "authentication".to_string(),
+                match_strategy: "inbound-auth-header".to_string(),
+                callsite: JsAcCallSite { file: file.to_string(), line: lineno },
+                raw_line: raw_line.clone(),
+                ac_hint: Some(format!("credential read from an inbound \"{header_name}\" header")),
+            });
         }
     }
 
@@ -836,6 +1007,188 @@ router.get("/admin", passport.authenticate("jwt", { session: false }), handler);
         let hit = matches.iter().find(|m| m.library == "passport").expect("no passport match");
         assert_eq!(hit.match_strategy, "call+import");
         assert_eq!(hit.category, "authentication");
+    }
+
+    // ── Outbound/inbound credential-header detection ────────────────────
+
+    #[test]
+    fn detects_credential_header_object_literal() {
+        // Real-world case found scanning chroma-core/chroma:
+        // clients/js/packages/chromadb-core/src/auth.ts's
+        // BasicAuthClientProvider builds its credential entirely as a plain
+        // object literal -- no SDK call shape exists for this at all, so it
+        // previously produced zero matches.
+        const SRC: &str = r#"
+class BasicAuthClientProvider {
+  constructor(textCredentials) {
+    const creds = textCredentials;
+    this.credentials = {
+      Authorization: "Basic " + base64Encode(creds),
+    };
+  }
+}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("auth.ts", SRC, &sigs, &opts());
+        let hit = matches
+            .iter()
+            .find(|m| m.library == "outbound-credential-header")
+            .expect("no outbound-credential-header match");
+        assert_eq!(hit.match_strategy, "header-object-literal");
+        assert_eq!(hit.category, "authentication");
+    }
+
+    #[test]
+    fn detects_credential_header_quoted_object_key() {
+        const SRC: &str = r#"
+const headers = { "x-api-key": apiKey };
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("client.ts", SRC, &sigs, &opts());
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.library == "outbound-credential-header" && m.match_strategy == "header-object-literal"),
+            "expected an outbound-credential-header match: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn no_credential_header_match_for_unrelated_object_key() {
+        const SRC: &str = r#"
+const config = { timeout: 5000, retries: 3 };
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("config.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "outbound-credential-header"),
+            "unexpected match on a non-credential object key: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn detects_credential_header_via_headers_set_call() {
+        const SRC: &str = r#"
+const headers = new Headers();
+headers.set("Authorization", `Bearer ${token}`);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("fetcher.ts", SRC, &sigs, &opts());
+        let hit = matches
+            .iter()
+            .find(|m| m.library == "outbound-credential-header" && m.match_strategy == "header-set-call")
+            .expect("no header-set-call match");
+        assert_eq!(hit.category, "authentication");
+    }
+
+    #[test]
+    fn non_header_set_call_is_not_flagged() {
+        const SRC: &str = r#"
+const seen = new Set();
+seen.set("Authorization", token);
+const cache = {};
+cache.set("Authorization", token);
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("misc.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.match_strategy != "header-set-call"),
+            "receiver without \"header\" in its name must not be flagged: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn detects_credential_header_dynamic_assignment() {
+        // Real-world case found scanning chroma-core/chroma:
+        // TokenAuthClientProvider assigns a computed header key
+        // (`Authorization` or `X-Chroma-Token`, chosen at runtime) rather
+        // than a literal, so the object-literal-key scan above can't see it.
+        const SRC: &str = r#"
+class TokenAuthClientProvider {
+  constructor(textCredentials, headerType = "AUTHORIZATION") {
+    const creds = textCredentials;
+    const headerKey = tokenHeaderTypeToHeaderKey(headerType);
+    const headerVal = headerType === "AUTHORIZATION" ? `Bearer ${creds}` : creds;
+    this.credentials = {};
+    this.credentials[headerKey] = headerVal;
+  }
+}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("auth.ts", SRC, &sigs, &opts());
+        let hit = matches
+            .iter()
+            .find(|m| m.library == "outbound-credential-header" && m.match_strategy == "header-dynamic-assign")
+            .expect("no header-dynamic-assign match");
+        assert!(hit.ac_hint.as_deref().unwrap_or_default().contains("verify manually"));
+    }
+
+    #[test]
+    fn dynamic_assignment_not_flagged_without_auth_signal_or_header_receiver() {
+        const SRC: &str = r#"
+const cache = {};
+cache[itemKey] = itemVal;
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("cache.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.match_strategy != "header-dynamic-assign"),
+            "unrelated dynamic assignment must not be flagged: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn detects_inbound_credential_header_via_get_call() {
+        const SRC: &str = r#"
+export function handler(request) {
+  const token = request.headers.get("authorization");
+}
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("handler.ts", SRC, &sigs, &opts());
+        let hit = matches
+            .iter()
+            .find(|m| m.library == "inbound-credential-header")
+            .expect("no inbound-credential-header match");
+        assert_eq!(hit.match_strategy, "inbound-auth-header");
+    }
+
+    #[test]
+    fn detects_inbound_credential_header_via_bracket_access() {
+        const SRC: &str = r#"
+app.use((req, res, next) => {
+  const key = req.headers["x-api-key"];
+  next();
+});
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("middleware.ts", SRC, &sigs, &opts());
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.library == "inbound-credential-header" && m.match_strategy == "inbound-auth-header"),
+            "expected an inbound-credential-header match: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn no_inbound_credential_header_match_for_unrelated_header_name() {
+        const SRC: &str = r#"
+const type = request.headers.get("content-type");
+const accept = req.headers["accept"];
+"#;
+        let sigs = load_ac_js_signatures(datasets_path()).unwrap();
+        let matches = scan_ac_js_source("headers.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "inbound-credential-header"),
+            "unexpected match on a non-credential header: {:#?}",
+            matches
+        );
     }
 
     #[test]

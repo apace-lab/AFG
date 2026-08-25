@@ -7,6 +7,12 @@
 //! functions that call the catalogued SDK methods with plausible (not
 //! necessarily runnable) arguments, compiled in debug mode so the calls
 //! aren't inlined away before `--emit=llvm-ir` can capture them.
+//!
+//! Each call is driven through `tokio::runtime::Runtime::block_on` from a
+//! plain (non-async) `pub fn` rather than left as a bare `pub async fn` --
+//! see `IR_SourceCode/ollama-rs/src/lib.rs` for why: an un-polled async
+//! fn's body compiles to a trivial coroutine-constructor stub only, with
+//! the real call sequence never emitted.
 
 use clust::messages::{
     ClaudeModel,
@@ -38,18 +44,26 @@ fn request_body(prompt: &str, streaming: bool) -> MessagesRequestBody {
     }
 }
 
-pub async fn send_message(prompt: &str) -> MessagesResponseBody {
-    let client = Client::from_api_key(ApiKey::new("dummy-api-key"));
-    client
-        .create_a_message(request_body(prompt, false))
-        .await
-        .unwrap()
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().unwrap()
 }
 
-pub async fn stream_message(prompt: &str) {
-    let client = Client::from_api_key(ApiKey::new("dummy-api-key"));
-    let _stream = client
-        .create_a_message_stream(request_body(prompt, true))
-        .await
-        .unwrap();
+pub fn call_send_message(prompt: &str) -> MessagesResponseBody {
+    rt().block_on(async {
+        let client = Client::from_api_key(ApiKey::new("dummy-api-key"));
+        client
+            .create_a_message(request_body(prompt, false))
+            .await
+            .unwrap()
+    })
+}
+
+pub fn call_stream_message(prompt: &str) {
+    rt().block_on(async {
+        let client = Client::from_api_key(ApiKey::new("dummy-api-key"));
+        let _stream = client
+            .create_a_message_stream(request_body(prompt, true))
+            .await
+            .unwrap();
+    });
 }

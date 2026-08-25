@@ -6,27 +6,40 @@
 //! `llvm-ir`/`llvm-sys` deps). See `LLM_API_IR_VERIFICATION.md` at the repo
 //! root for the methodology, and `examples/src/ac_demo_llvm/my_app.rs` for
 //! the style this mirrors.
+//!
+//! The call is driven through `tokio::runtime::Runtime::block_on` from a
+//! plain (non-async) `pub fn` rather than left as a bare `pub async fn` --
+//! see `IR_SourceCode/ollama-rs/src/lib.rs` for why: an un-polled async
+//! fn's body compiles to a trivial coroutine-constructor stub only, with
+//! the real call sequence never emitted.
 
 use anthropic_sdk::Client;
 use serde_json::json;
 
-pub async fn send_message(api_key: &str) -> Result<(), anyhow::Error> {
-    let request = Client::new()
-        .auth(api_key)
-        .model("claude-3-5-sonnet-20241022")
-        .messages(&json!([
-            {"role": "user", "content": "Hello, Claude!"}
-        ]))
-        .max_tokens(1024)
-        .build()?;
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().unwrap()
+}
 
-    let prefix = String::from("chunk: ");
-    request
-        .execute(move |text: String| {
-            let prefix = prefix.clone();
-            async move {
-                println!("{prefix}{text}");
-            }
-        })
-        .await
+pub fn call_send_message(api_key: &str) {
+    rt().block_on(async {
+        let request = Client::new()
+            .auth(api_key)
+            .model("claude-3-5-sonnet-20241022")
+            .messages(&json!([
+                {"role": "user", "content": "Hello, Claude!"}
+            ]))
+            .max_tokens(1024)
+            .build()
+            .unwrap();
+
+        let prefix = String::from("chunk: ");
+        let _ = request
+            .execute(move |text: String| {
+                let prefix = prefix.clone();
+                async move {
+                    println!("{prefix}{text}");
+                }
+            })
+            .await;
+    });
 }

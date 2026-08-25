@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 misanthropic = "=1.0.0-alpha.16"
+tokio = { version = "1", features = ["rt-multi-thread"] }

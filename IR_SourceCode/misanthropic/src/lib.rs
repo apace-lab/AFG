@@ -21,22 +21,34 @@
 use misanthropic::prompt::message::Role;
 use misanthropic::{Client, Prompt};
 
-pub async fn send_message(prompt_text: &str) -> misanthropic::response::Message {
-    let client = Client::new("dummy-api-key".to_string()).unwrap();
-
-    let prompt = Prompt::default()
-        .messages([(Role::User, prompt_text)])
-        .unwrap();
-
-    client.message(&prompt).await.unwrap()
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().unwrap()
 }
 
-pub async fn stream_message(prompt_text: &str) -> misanthropic::Stream {
-    let client = Client::new("dummy-api-key".to_string()).unwrap();
+// Driven through `block_on` from a plain `pub fn` rather than left as a
+// bare `pub async fn` -- see `IR_SourceCode/ollama-rs/src/lib.rs` for why:
+// an un-polled async fn's body compiles to a trivial coroutine-constructor
+// stub only, with the real call sequence never emitted.
+pub fn call_send_message(prompt_text: &str) {
+    rt().block_on(async {
+        let client = Client::new("dummy-api-key".to_string()).unwrap();
 
-    let prompt = Prompt::default()
-        .messages([(Role::User, prompt_text)])
-        .unwrap();
+        let prompt = Prompt::default()
+            .messages([(Role::User, prompt_text)])
+            .unwrap();
 
-    client.stream(&prompt).await.unwrap()
+        let _ = client.message(&prompt).await.unwrap();
+    });
+}
+
+pub fn call_stream_message(prompt_text: &str) {
+    rt().block_on(async {
+        let client = Client::new("dummy-api-key".to_string()).unwrap();
+
+        let prompt = Prompt::default()
+            .messages([(Role::User, prompt_text)])
+            .unwrap();
+
+        let _ = client.stream(&prompt).await.unwrap();
+    });
 }

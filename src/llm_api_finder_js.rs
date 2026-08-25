@@ -144,6 +144,14 @@ static RE_HTTP_TRIGGER: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+// A declaration's parameter list is followed (skipping an optional
+// `: ReturnType` annotation) directly by a `{` that opens the body -- a call
+// expression's closing `)` is never followed by a bare `{` in valid JS/TS
+// (that's only legal after a function/method signature). Anchored, so it
+// only matches when the `{` (or `: ReturnType {`) comes immediately next.
+// See `looks_like_declaration` for how this is used.
+static RE_DECL_SUFFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?::\s*[^;{}]*)?\{").unwrap());
+
 /// How many lines before/after an HTTP trigger to search for a path literal.
 /// URLs are commonly built a few lines above the call (`const url = ...;`
 /// then `fetch(url, ...)` a couple of lines later), so the window is
@@ -183,6 +191,74 @@ fn import_satisfies(imports: &HashSet<String>, packages: &[String]) -> bool {
                 .iter()
                 .any(|imp| imp.starts_with(&format!("{pkg}/")))
     })
+}
+
+/// Whether the call-shape match whose own opening `(` ends at byte offset
+/// `open_paren_end` in `line` is actually a function/method *declaration*
+/// rather than an invocation of a cataloged SDK method.
+///
+/// Real-world case found scanning chroma-core/chroma:
+/// `OllamaEmbeddingFunction`'s own `public async generate(texts: string[]) {`
+/// method -- Chroma's wrapper implementing its `IEmbeddingFunction`
+/// interface, which just happens to share its name with `ollama-js`'s
+/// cataloged `generate` method -- was reported as a real `ollama-js` call
+/// even though the actual SDK call inside that method body is `.embed(...)`,
+/// a different method entirely. Nothing here ever calls the real SDK's
+/// `generate`.
+///
+/// Finds the match's own matching close paren (string/template-literal
+/// aware, so a stray `)` inside a default parameter value's string doesn't
+/// desync depth tracking) and checks what immediately follows it via
+/// `RE_DECL_SUFFIX`. This works uniformly for every declaration shape --
+/// `function generate(...)`, class method shorthand (`async generate(...)
+/// {`), object method shorthand (`generate(...) {`), getters/setters --
+/// without needing to enumerate every possible modifier keyword (`public`,
+/// `private`, `static`, `async`, `get`, `set`, ...): none of them change
+/// what comes *after* the parameter list.
+///
+/// Only looks within `line` itself: a multi-line parameter list won't be
+/// recognized (no matching close paren is found), so this falls through to
+/// `false` ("not a declaration") -- the same recall-over-precision
+/// trade-off the rest of this scanner already accepts elsewhere.
+fn looks_like_declaration(line: &str, open_paren_end: usize) -> bool {
+    let chars: Vec<char> = line[open_paren_end..].chars().collect();
+    let mut depth = 1i32;
+    let mut in_string: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_string {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => {
+                in_string = Some(c);
+                i += 1;
+            }
+            '(' => {
+                depth += 1;
+                i += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let rest: String = chars[i + 1..].iter().collect();
+                    return RE_DECL_SUFFIX.is_match(rest.trim_start());
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false // no matching close paren on this line -- can't tell, assume call
 }
 
 /// Scan one file's already-read source text. `file` is the path/label used in
@@ -245,6 +321,9 @@ pub fn scan_js_source(
                 });
             if shadowed {
                 continue;
+            }
+            if looks_like_declaration(line, *end) {
+                continue; // e.g. a class's own method sharing a cataloged SDK method's name
             }
             let confirmed = import_satisfies(&imports, &m.sig.packages);
             if m.sig.require_import && !confirmed {
@@ -630,6 +709,70 @@ c.chat.completions.create({ model: "gpt-4o" });
         assert!(
             libs.contains(&"groq-sdk"),
             "expected groq-sdk candidate: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn method_declaration_sharing_sdk_pattern_name_is_not_a_call() {
+        // Real-world false positive found scanning chroma-core/chroma:
+        // OllamaEmbeddingFunction's own `generate` method (implementing its
+        // IEmbeddingFunction interface) shares its name with ollama-js's
+        // cataloged `generate` call, but the real SDK call inside the body
+        // is `.embed(...)` -- a different method. Must not be reported.
+        const SRC: &str = r#"
+import { Ollama } from "ollama";
+
+export class OllamaEmbeddingFunction {
+  public async generate(texts: string[]) {
+    return await this.ollamaClient.embed({ input: texts });
+  }
+}
+"#;
+        let sigs = load_js_signatures(datasets_path()).unwrap();
+        let matches = scan_js_source("OllamaEmbeddingFunction.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "ollama-js"),
+            "method declaration sharing a cataloged SDK pattern name must not be reported as a call: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn plain_function_declaration_sharing_sdk_pattern_name_is_not_a_call() {
+        const SRC: &str = r#"
+import Cohere from "cohere-ai";
+function chat(msg: string) {
+  return { role: "user", content: msg };
+}
+"#;
+        let sigs = load_js_signatures(datasets_path()).unwrap();
+        let matches = scan_js_source("helpers.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().all(|m| m.library != "cohere-ai"),
+            "function declaration sharing a cataloged SDK pattern name must not be reported as a call: {:#?}",
+            matches
+        );
+    }
+
+    #[test]
+    fn real_call_immediately_followed_by_block_is_still_detected() {
+        // Guard against over-suppression: a real call used as an `if`/`while`
+        // condition is also followed by `{`, but not *immediately* after its
+        // own matching close paren (the `if`/`while`'s own paren comes
+        // first) -- this must still be reported.
+        const SRC: &str = r#"
+import OpenAI from "openai";
+const c = new OpenAI();
+if (c.chat.completions.create({ model: "gpt-4o" })) {
+  console.log("ok");
+}
+"#;
+        let sigs = load_js_signatures(datasets_path()).unwrap();
+        let matches = scan_js_source("guarded.ts", SRC, &sigs, &opts());
+        assert!(
+            matches.iter().any(|m| m.library == "openai"),
+            "real call followed by an unrelated block must still be detected: {:#?}",
             matches
         );
     }
